@@ -1,16 +1,16 @@
 # claude-session-driver
 
-A Claude Code plugin that gives Claude the ability to spawn, orchestrate, and supervise other Claude Code sessions.
+Turn one Claude Code session into a project manager that delegates tasks to other Claude Code sessions.
 
 ## Why
 
-A single Claude session can only do one thing at a time. This plugin lets a "controller" Claude launch "worker" Claude sessions in tmux, send them tasks, monitor their progress, review and approve their tool calls, and read their results. The controller can delegate work, fan out across parallel workers, chain workers in pipelines, or hand a running session off to a human.
+A single Claude session works on one task at a time. With this plugin, a controller session launches worker sessions in tmux, assigns each a task, monitors their progress, reviews their tool calls, and collects results. Workers run in parallel. The controller decides what to do with their output.
 
 ## How It Works
 
-The plugin installs hooks into each worker session that emit lifecycle events (session start, prompt submitted, tool use, stop, session end) to a JSONL file. A PreToolUse hook gives the controller a window to inspect and approve or deny every tool call before it executes — auto-approving after a configurable timeout so workers never hang.
+Each worker session loads hooks that write lifecycle events to a JSONL file: session start, prompt submitted, tool use, stop, and session end. A PreToolUse hook pauses before every tool call, giving the controller a window to approve or deny it. If the controller does not respond within the timeout, the tool call proceeds.
 
-The controller drives workers through shell scripts that handle tmux management, event polling, session logs, and cleanup.
+The controller orchestrates workers through shell scripts that manage tmux sessions, poll events, read conversation logs, and clean up.
 
 ## Installation
 
@@ -22,29 +22,25 @@ Requires **tmux**, **jq**, and the **claude** CLI.
 
 ## Usage
 
-Once installed, the `driving-claude-code-sessions` skill teaches Claude how to use the plugin. The skill covers:
+Install the plugin and ask Claude to manage a project. The `driving-claude-code-sessions` skill provides orchestration patterns:
 
-- Launching and stopping workers
-- Single-turn and multi-turn conversations
-- Fan-out parallelism (multiple workers on independent tasks)
-- Pipelines (chaining workers where one's output feeds the next)
-- Tool call approval and denial
-- Reading worker event streams and conversation logs
-- Handing off a live session to a human operator
+- **Delegate and wait:** Launch a worker, assign a task, read the result.
+- **Fan out:** Launch several workers on independent tasks, wait for all to finish.
+- **Pipeline:** Chain workers so each builds on the previous worker's output.
+- **Supervise:** Hold a multi-turn conversation with a worker, reviewing each response.
+- **Hand off:** Pass a running worker session to a human operator in tmux.
 
 ## Scripts
 
-All orchestration happens through these scripts in the `scripts/` directory:
-
-| Script | Description |
-|--------|-------------|
+| Script | Purpose |
+|--------|---------|
 | `launch-worker.sh` | Start a worker session in tmux |
-| `converse.sh` | Send a prompt, wait for completion, return the response |
+| `converse.sh` | Send a prompt, wait, return the response |
 | `send-prompt.sh` | Send a prompt without waiting |
-| `wait-for-event.sh` | Block until a specific lifecycle event appears |
+| `wait-for-event.sh` | Block until a lifecycle event appears |
 | `read-events.sh` | Read and filter the event stream |
-| `read-turn.sh` | Format the last conversation turn as markdown |
-| `stop-worker.sh` | Gracefully stop a worker and clean up |
+| `read-turn.sh` | Format the last turn as markdown |
+| `stop-worker.sh` | Stop a worker and clean up |
 | `approve-tool.sh` | Approve or deny a pending tool call |
 
 ## License
