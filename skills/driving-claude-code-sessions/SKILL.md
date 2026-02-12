@@ -1,6 +1,6 @@
 ---
 name: driving-claude-code-sessions
-description: Use when you need to spawn, monitor, and interact with other interactive Claude Code sessions - enables launching worker sessions in tmux, sending prompts, waiting for responses, and handing off to human operators
+description: Use when acting as a project manager that delegates tasks to other Claude Code sessions - launch workers, assign them work, monitor progress, review their tool calls, and collect results
 ---
 
 # Driving Claude Code Sessions
