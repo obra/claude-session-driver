@@ -21,6 +21,7 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name')
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
 
+META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
 PENDING_FILE="/tmp/claude-workers/${SESSION_ID}.tool-pending"
 DECISION_FILE="/tmp/claude-workers/${SESSION_ID}.tool-decision"
 EVENT_FILE="/tmp/claude-workers/${SESSION_ID}.events.jsonl"
@@ -32,6 +33,13 @@ mkdir -p /tmp/claude-workers
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 jq -cn --arg ts "$TIMESTAMP" --arg event "pre_tool_use" --arg tool "$TOOL_NAME" --arg input "$TOOL_INPUT" \
   '{ts: $ts, event: $event, tool: $tool, tool_input: ($input | fromjson)}' >> "$EVENT_FILE"
+
+# If no controller launched this session (no .meta file from launch-worker.sh),
+# skip polling and approve immediately to avoid blocking interactive sessions.
+if [ ! -f "$META_FILE" ]; then
+  echo '{"hookSpecificOutput":{"permissionDecision":"allow"}}'
+  exit 0
+fi
 
 # Write pending approval request
 jq -cn --arg tool "$TOOL_NAME" --arg input "$TOOL_INPUT" \
