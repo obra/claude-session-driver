@@ -47,7 +47,7 @@ else
   LINES_CHECKED=$AFTER_LINE
   while [ "$SECONDS" -lt "$DEADLINE" ]; do
     if CONTENT=$(transport_read "$EVENT_FILE" 2>/dev/null); then
-      TOTAL_LINES=$(printf '%s' "$CONTENT" | wc -l | tr -d ' ')
+      TOTAL_LINES=$(printf '%s' "$CONTENT" | awk 'END{print NR}')
       if [ "$TOTAL_LINES" -gt "$LINES_CHECKED" ]; then
         MATCH=$(echo "$CONTENT" | tail -n +"$((LINES_CHECKED + 1))" \
           | jq -c "select(.event == \"$EVENT_TYPE\")" 2>/dev/null | head -1)
