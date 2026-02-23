@@ -5,19 +5,34 @@ set -euo pipefail
 # to approve or deny the tool call. If the controller doesn't respond within the
 # timeout, auto-approves so the worker never hangs.
 #
+# Only activates for worker sessions launched by the session driver (identified
+# by the presence of a .meta file). Non-worker sessions are auto-approved
+# immediately to avoid a 30-second polling delay on every tool call.
+#
 # Flow:
 # 1. Read tool details from stdin
-# 2. Append pre_tool_use event to the event stream
-# 3. Write tool details to <session_id>.tool-pending
-# 4. Poll for <session_id>.tool-decision (controller writes this)
-# 5. Return the decision (or auto-approve on timeout)
-# 6. Clean up pending/decision files
+# 2. Check if this is a managed worker session (has .meta file)
+# 3. If not a worker, auto-approve immediately
+# 4. Append pre_tool_use event to the event stream
+# 5. Write tool details to <session_id>.tool-pending
+# 6. Poll for <session_id>.tool-decision (controller writes this)
+# 7. Return the decision (or auto-approve on timeout)
+# 8. Clean up pending/decision files
 
 APPROVAL_TIMEOUT="${CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT:-30}"
 
 INPUT=$(cat)
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
+
+# Only activate for managed worker sessions. The session driver creates a .meta
+# file when launching a worker. If it doesn't exist, this is a normal interactive
+# session (or a --dangerously-skip-permissions session without a controller) and
+# we should not block.
+if [ ! -f "/tmp/claude-workers/${SESSION_ID}.meta" ]; then
+  exit 0
+fi
+
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name')
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
 

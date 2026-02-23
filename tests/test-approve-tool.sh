@@ -33,10 +33,48 @@ setup() {
   mkdir -p "$EVENT_DIR"
 }
 
+# Create a .meta file to simulate a managed worker session
+make_worker() {
+  local sid="$1"
+  echo '{"tmux_name":"test","session_id":"'"$sid"'"}' > "$EVENT_DIR/${sid}.meta"
+}
+
+# --- Test 0: Non-worker sessions exit immediately ---
+echo "Test 0: Non-worker sessions exit immediately (no .meta file)"
+setup
+SESSION_ID="test-approve-000"
+EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
+
+# No make_worker call — this simulates a normal interactive session
+START_TIME=$SECONDS
+OUTPUT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=10 \
+  echo '{"session_id":"test-approve-000","tool_name":"Bash","tool_input":{"command":"echo hello"}}' \
+  | bash "$APPROVE_TOOL")
+ELAPSED=$((SECONDS - START_TIME))
+
+if [ -z "$OUTPUT" ]; then
+  pass "non-worker produces no output (clean exit)"
+else
+  fail "non-worker output" "expected empty output, got '$OUTPUT'"
+fi
+
+if [ "$ELAPSED" -lt 2 ]; then
+  pass "non-worker returns immediately (no polling delay)"
+else
+  fail "non-worker timing" "took ${ELAPSED}s, expected < 2s"
+fi
+
+if [ ! -f "$EVENT_FILE" ]; then
+  pass "non-worker does not create event file"
+else
+  fail "non-worker event file" "event file should not exist"
+fi
+
 # --- Test 1: Emits pre_tool_use event to event stream ---
 echo "Test 1: Emits pre_tool_use event"
 setup
 SESSION_ID="test-approve-001"
+make_worker "$SESSION_ID"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
 # Run with short timeout so it auto-approves quickly
@@ -61,6 +99,7 @@ fi
 echo "Test 2: Auto-approves on timeout"
 setup
 SESSION_ID="test-approve-002"
+make_worker "$SESSION_ID"
 
 OUTPUT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=1 \
   echo '{"session_id":"test-approve-002","tool_name":"Read","tool_input":{"file_path":"/tmp/test"}}' \
@@ -77,6 +116,7 @@ fi
 echo "Test 3: Respects controller allow decision"
 setup
 SESSION_ID="test-approve-003"
+make_worker "$SESSION_ID"
 PENDING_FILE="$EVENT_DIR/${SESSION_ID}.tool-pending"
 DECISION_FILE="$EVENT_DIR/${SESSION_ID}.tool-decision"
 
@@ -105,6 +145,7 @@ fi
 echo "Test 4: Respects controller deny decision"
 setup
 SESSION_ID="test-approve-004"
+make_worker "$SESSION_ID"
 DECISION_FILE="$EVENT_DIR/${SESSION_ID}.tool-decision"
 
 # Write deny decision after a short delay
@@ -121,26 +162,21 @@ else
   fail "decision" "expected 'deny', got '$DECISION'"
 fi
 
-# --- Test 5: Pending file contains tool details ---
-echo "Test 5: Pending file contains tool details"
+# --- Test 5: Event stream records tool details ---
+echo "Test 5: Event stream records tool details"
 setup
 SESSION_ID="test-approve-005"
-PENDING_FILE="$EVENT_DIR/${SESSION_ID}.tool-pending"
+make_worker "$SESSION_ID"
+DECISION_FILE="$EVENT_DIR/${SESSION_ID}.tool-decision"
+EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
-# Immediately write decision so the hook doesn't block
-echo '{"decision":"allow"}' > "$EVENT_DIR/${SESSION_ID}.tool-decision"
+# Write decision after a short delay (after hook clears stale files)
+(sleep 1 && echo '{"decision":"allow"}' > "$DECISION_FILE") &
 
 OUTPUT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=10 \
   echo '{"session_id":"test-approve-005","tool_name":"Edit","tool_input":{"file_path":"/tmp/foo","old_string":"a","new_string":"b"}}' \
-  | bash "$APPROVE_TOOL" &)
+  | bash "$APPROVE_TOOL")
 
-# Give it a moment to write the pending file
-sleep 0.5
-
-# The pending file may already be cleaned up if the hook found the decision immediately.
-# Check the event stream instead for tool details.
-EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
-wait
 if [ -f "$EVENT_FILE" ]; then
   TOOL=$(head -1 "$EVENT_FILE" | jq -r '.tool')
   if [ "$TOOL" = "Edit" ]; then

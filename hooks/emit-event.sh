@@ -4,10 +4,18 @@ set -euo pipefail
 # Hook script called by Claude Code for session lifecycle events.
 # Reads hook input JSON from stdin and appends a JSONL event line
 # to /tmp/claude-workers/<session_id>.events.jsonl.
+#
+# Only activates for worker sessions launched by the session driver.
 
 INPUT=$(cat)
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
+
+# Only emit events for managed worker sessions.
+if [ ! -f "/tmp/claude-workers/${SESSION_ID}.meta" ]; then
+  exit 0
+fi
+
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 

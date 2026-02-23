@@ -12,6 +12,7 @@ FAIL_COUNT=0
 
 cleanup() {
   rm -f "$EVENT_DIR"/test-*.events.jsonl
+  rm -f "$EVENT_DIR"/test-*.meta
 }
 trap cleanup EXIT
 
@@ -30,10 +31,34 @@ setup() {
   cleanup
 }
 
+# Create a .meta file to simulate a managed worker session
+make_worker() {
+  local sid="$1"
+  mkdir -p "$EVENT_DIR"
+  echo '{"tmux_name":"test","session_id":"'"$sid"'"}' > "$EVENT_DIR/${sid}.meta"
+}
+
+# --- Test: Non-worker sessions are silently skipped ---
+echo "Test: Non-worker sessions are silently skipped"
+setup
+SESSION_ID="test-session-000"
+EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
+
+# No make_worker — this is a normal interactive session
+echo '{"session_id":"test-session-000","hook_event_name":"SessionStart","cwd":"/home/user/project"}' \
+  | bash "$EMIT_EVENT" > /dev/null
+
+if [ ! -f "$EVENT_FILE" ]; then
+  pass "non-worker session does not create event file"
+else
+  fail "non-worker skip" "event file should not exist"
+fi
+
 # --- Test: SessionStart creates file with correct JSONL ---
 echo "Test: SessionStart creates file with correct JSONL"
 setup
 SESSION_ID="test-session-001"
+make_worker "$SESSION_ID"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
 echo '{"session_id":"test-session-001","hook_event_name":"SessionStart","cwd":"/home/user/project"}' \
@@ -78,6 +103,7 @@ fi
 echo "Test: Stop outputs approve decision and writes event"
 setup
 SESSION_ID="test-session-002"
+make_worker "$SESSION_ID"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
 STDOUT=$(echo '{"session_id":"test-session-002","hook_event_name":"Stop"}' \
@@ -116,6 +142,7 @@ fi
 echo "Test: UserPromptSubmit writes correctly"
 setup
 SESSION_ID="test-session-003"
+make_worker "$SESSION_ID"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
 echo '{"session_id":"test-session-003","hook_event_name":"UserPromptSubmit"}' \
@@ -137,6 +164,7 @@ fi
 echo "Test: SessionEnd writes correctly"
 setup
 SESSION_ID="test-session-004"
+make_worker "$SESSION_ID"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
 echo '{"session_id":"test-session-004","hook_event_name":"SessionEnd"}' \
@@ -158,6 +186,7 @@ fi
 echo "Test: Multiple events append to same file"
 setup
 SESSION_ID="test-session-005"
+make_worker "$SESSION_ID"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
 echo '{"session_id":"test-session-005","hook_event_name":"SessionStart","cwd":"/tmp"}' \
@@ -198,6 +227,7 @@ check_mapping() {
   local session_id="test-session-006-${hook_name}"
   local event_file="$EVENT_DIR/${session_id}.events.jsonl"
   cleanup
+  make_worker "$session_id"
 
   local input="{\"session_id\":\"${session_id}\",\"hook_event_name\":\"${hook_name}\"}"
   if [ "$hook_name" = "SessionStart" ]; then
