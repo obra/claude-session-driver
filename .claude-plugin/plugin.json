@@ -1,7 +1,7 @@
 {
   "name": "claude-session-driver",
   "description": "Launch, control, and monitor other Claude Code sessions as workers via tmux",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "Jesse Vincent",
     "email": "jesse@fsck.com"
