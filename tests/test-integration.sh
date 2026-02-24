@@ -110,7 +110,7 @@ echo ""
 run_test
 echo "Test 1: Launch worker..."
 # Short approval timeout so hook-gated tool calls don't block the test
-RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=2 bash "$PLUGIN_DIR/scripts/launch-worker.sh" "$TMUX_NAME" /tmp 2>&1)
+RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=2 bash "$PLUGIN_DIR/scripts/launch-worker.sh" --name "$TMUX_NAME" --workdir /tmp 2>&1)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 EVENTS_FILE=$(echo "$RESULT" | jq -r '.events_file')
 
@@ -157,7 +157,7 @@ fi
 run_test
 echo "Test 5: Sending prompt (file write)..."
 TEST_FILE="/tmp/integration-test-$$.txt"
-bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$TMUX_NAME" "Write the word 'hello' to $TEST_FILE using the Write tool. Do not read it first."
+bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$TMUX_NAME" "$SESSION_ID" "Write the word 'hello' to $TEST_FILE using the Write tool. Do not read it first."
 STOP_EVENT=$(bash "$PLUGIN_DIR/scripts/wait-for-event.sh" "$SESSION_ID" stop 120 2>&1)
 STOP_EXIT=$?
 

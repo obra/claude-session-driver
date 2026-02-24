@@ -30,11 +30,36 @@ Install the plugin and ask Claude to manage a project. The `driving-claude-code-
 - **Supervise:** Hold a multi-turn conversation with a worker, reviewing each response.
 - **Hand off:** Pass a running worker session to a human operator in tmux.
 
+## Remote Workers
+
+Workers can run on remote SSH hosts or inside Docker containers, not just locally.
+
+```bash
+# SSH worker — code lives on a remote machine
+launch-worker.sh --name integration-tests \
+  --target ssh://deploy@staging.example.com \
+  --workdir /opt/app
+
+# Docker worker — isolated environment using an existing container
+launch-worker.sh --name node18-compat \
+  --target docker://test-env \
+  --workdir /app
+
+# Ephemeral Docker worker — created on launch, removed on stop
+launch-worker.sh --name ephemeral \
+  --target docker-run://node:18 \
+  --workdir /workspace
+```
+
+Hooks are synced automatically to the remote host via `scp` or `docker cp` on first launch. Prerequisites on the remote: `tmux`, `jq`, and `claude` CLI installed and authenticated.
+
+All orchestration patterns work identically with remote workers.
+
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `launch-worker.sh` | Start a worker session in tmux |
+| `launch-worker.sh` | Start a worker session (locally or remote via `--target`) |
 | `converse.sh` | Send a prompt, wait, return the response |
 | `send-prompt.sh` | Send a prompt without waiting |
 | `wait-for-event.sh` | Block until a lifecycle event appears |

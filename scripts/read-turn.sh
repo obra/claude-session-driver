@@ -16,6 +16,12 @@ if [ "${2:-}" = "--full" ]; then
   FULL_OUTPUT=true
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/lib"
+# shellcheck source=lib/transport.sh
+source "$LIB_DIR/transport.sh"
+csd_load_target "$SESSION_ID"
+
 META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
 
 # Resolve session log path
@@ -25,21 +31,23 @@ if [ -z "$CWD" ] || [ "$CWD" = "null" ]; then
   exit 1
 fi
 
-if [ -d "$CWD" ]; then
-  CWD=$(cd "$CWD" && pwd -P)
+if [ "${WORKER_TARGET:-local}" = "local" ] || [ -z "${WORKER_TARGET:-}" ]; then
+  if [ -d "$CWD" ]; then
+    CWD=$(cd "$CWD" && pwd -P)
+  fi
 fi
 
+WORKER_HOME=$(jq -r '.worker_home // empty' "$META_FILE" 2>/dev/null || echo "$HOME")
 ENCODED_PATH=$(echo "$CWD" | sed 's|/|-|g')
-LOG_FILE="$HOME/.claude/projects/${ENCODED_PATH}/${SESSION_ID}.jsonl"
+LOG_FILE="$WORKER_HOME/.claude/projects/${ENCODED_PATH}/${SESSION_ID}.jsonl"
 
-if [ ! -f "$LOG_FILE" ]; then
-  echo "Error: Session log not found at $LOG_FILE" >&2
-  exit 1
+if [ "${WORKER_TARGET:-local}" = "local" ] || [ -z "${WORKER_TARGET:-}" ]; then
+  [ ! -f "$LOG_FILE" ] && { echo "Error: Session log not found at $LOG_FILE" >&2; exit 1; }
 fi
 
 # Find the line number of the last real user prompt.
 # Filter out tool_result messages and internal commands (local-command, /exit).
-LAST_PROMPT_LINE=$(grep -n '"type":"user"' "$LOG_FILE" \
+LAST_PROMPT_LINE=$(transport_read "$LOG_FILE" | grep -n '"type":"user"' \
   | grep -v '"tool_result"' \
   | grep -v '<local-command' \
   | grep -v '<command-name>' \
@@ -53,7 +61,7 @@ fi
 
 # Extract all lines from the last prompt onward, filter to assistant and user
 # (tool_result) messages, and format as markdown.
-tail -n +"$LAST_PROMPT_LINE" "$LOG_FILE" \
+transport_read "$LOG_FILE" | tail -n +"$LAST_PROMPT_LINE" \
   | jq -r --argjson full "$FULL_OUTPUT" '
     # Skip non-conversation messages
     select(.type == "assistant" or .type == "user") |

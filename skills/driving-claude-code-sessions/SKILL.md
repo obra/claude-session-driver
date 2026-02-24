@@ -31,7 +31,7 @@ SCRIPTS="<this-skill's-base-directory>/plugin/scripts"
 ### 1. Launch a Worker
 
 ```bash
-RESULT=$("$SCRIPTS/launch-worker.sh" my-worker /path/to/project)
+RESULT=$("$SCRIPTS/launch-worker.sh" --name my-worker --workdir /path/to/project)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 ```
@@ -47,7 +47,7 @@ Permission bypass is automatic. The worker's PreToolUse hook provides controller
 Pass extra `claude` CLI arguments after the working directory:
 ```bash
 # Use a specific model
-RESULT=$("$SCRIPTS/launch-worker.sh" my-worker /path/to/project --model sonnet)
+RESULT=$("$SCRIPTS/launch-worker.sh" --name my-worker --workdir /path/to/project -- --model sonnet)
 ```
 
 ### 2. Converse (Preferred)
@@ -71,7 +71,7 @@ R2=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Now add edge case tests for
 For finer control, use the individual scripts. `send-prompt.sh` sends text without waiting:
 
 ```bash
-"$SCRIPTS/send-prompt.sh" my-worker "Refactor the auth module to use JWT tokens"
+"$SCRIPTS/send-prompt.sh" my-worker "$SESSION_ID" "Refactor the auth module to use JWT tokens"
 ```
 
 ### 4. Wait for the Worker to Finish
@@ -155,13 +155,43 @@ The worker is running in tmux session 'my-worker'. You can:
 
 Leave the worker running. Do not stop it when handing off.
 
+## Remote Workers
+
+Workers can run on remote SSH hosts or inside Docker containers. Pass `--target` to `launch-worker.sh`:
+
+**SSH worker** — code lives on a remote machine:
+```bash
+"$SCRIPTS/launch-worker.sh" --name integration-tests \
+  --target ssh://deploy@staging.example.com \
+  --workdir /opt/app
+```
+Prerequisites on the remote host: `tmux`, `jq`, `claude` CLI installed and authenticated.
+Hooks are automatically synced on first connect via `scp`.
+
+**Docker worker** — isolated environment using an existing container:
+```bash
+"$SCRIPTS/launch-worker.sh" --name node18-compat \
+  --target docker://test-env \
+  --workdir /app
+```
+
+**Ephemeral Docker worker** — spun up and torn down automatically:
+```bash
+"$SCRIPTS/launch-worker.sh" --name ephemeral \
+  --target docker-run://node:18 \
+  --workdir /workspace
+"$SCRIPTS/stop-worker.sh" ephemeral $SESSION_ID   # also removes the container
+```
+
+All orchestration patterns (delegate-and-wait, fan-out, pipeline) work identically with remote workers.
+
 ## Script Reference
 
 | Script | Usage | Description |
 |--------|-------|-------------|
 | `converse.sh` | `<tmux-name> <session-id> <prompt> [timeout=120]` | Send prompt, wait, return response |
-| `launch-worker.sh` | `<tmux-name> <working-dir> [claude-args...]` | Start a worker session |
-| `send-prompt.sh` | `<tmux-name> <prompt-text>` | Send a prompt to a worker |
+| `launch-worker.sh` | `--name <tmux-name> --workdir <dir> [--target T] [-- claude-args...]` | Start a worker session |
+| `send-prompt.sh` | `<tmux-name> <session-id> <prompt-text>` | Send a prompt to a worker |
 | `wait-for-event.sh` | `<session-id> <event-type> [timeout=60] [--after-line N]` | Block until event or timeout |
 | `read-events.sh` | `<session-id> [--last N] [--type T] [--follow]` | Read event stream |
 | `stop-worker.sh` | `<tmux-name> <session-id>` | Gracefully stop and clean up |
@@ -175,10 +205,10 @@ All scripts exit 0 on success, non-zero on failure. Error messages go to stderr.
 ### Single Worker: Delegate and Wait
 
 ```bash
-RESULT=$("$SCRIPTS/launch-worker.sh" task-worker ~/myproject)
+RESULT=$("$SCRIPTS/launch-worker.sh" --name task-worker --workdir ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 
-"$SCRIPTS/send-prompt.sh" task-worker "Run the test suite and fix any failures"
+"$SCRIPTS/send-prompt.sh" task-worker "$SESSION_ID" "Run the test suite and fix any failures"
 "$SCRIPTS/wait-for-event.sh" "$SESSION_ID" stop 600
 
 # Read what happened, then clean up
@@ -190,15 +220,15 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 
 ```bash
 # Launch workers for different tasks
-R1=$("$SCRIPTS/launch-worker.sh" worker-api ~/myproject)
+R1=$("$SCRIPTS/launch-worker.sh" --name worker-api --workdir ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
 
-R2=$("$SCRIPTS/launch-worker.sh" worker-ui ~/myproject)
+R2=$("$SCRIPTS/launch-worker.sh" --name worker-ui --workdir ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
 
 # Send each their task
-"$SCRIPTS/send-prompt.sh" worker-api "Add pagination to the /users endpoint"
-"$SCRIPTS/send-prompt.sh" worker-ui "Add a loading spinner to the user list page"
+"$SCRIPTS/send-prompt.sh" worker-api "$S1" "Add pagination to the /users endpoint"
+"$SCRIPTS/send-prompt.sh" worker-ui "$S2" "Add a loading spinner to the user list page"
 
 # Wait for both (sequentially -- first one to finish unblocks its wait)
 "$SCRIPTS/wait-for-event.sh" "$S1" stop 600
@@ -215,15 +245,15 @@ Pass one worker's output to the next:
 
 ```bash
 # Worker 1: Generate an API spec
-R1=$("$SCRIPTS/launch-worker.sh" worker-spec ~/myproject)
+R1=$("$SCRIPTS/launch-worker.sh" --name worker-spec --workdir ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
-"$SCRIPTS/send-prompt.sh" worker-spec "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml"
+"$SCRIPTS/send-prompt.sh" worker-spec "$S1" "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml"
 "$SCRIPTS/wait-for-event.sh" "$S1" stop 300
 
 # Worker 2: Implement from the spec that Worker 1 produced
-R2=$("$SCRIPTS/launch-worker.sh" worker-impl ~/myproject)
+R2=$("$SCRIPTS/launch-worker.sh" --name worker-impl --workdir ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
-"$SCRIPTS/send-prompt.sh" worker-impl "Implement the API endpoint defined in /tmp/api-spec.yaml"
+"$SCRIPTS/send-prompt.sh" worker-impl "$S2" "Implement the API endpoint defined in /tmp/api-spec.yaml"
 "$SCRIPTS/wait-for-event.sh" "$S2" stop 600
 
 # Clean up both
@@ -238,7 +268,7 @@ The key: workers communicate through files on disk. The controller orchestrates 
 `converse.sh` handles `--after-line` tracking automatically, so multi-turn is straightforward:
 
 ```bash
-RESULT=$("$SCRIPTS/launch-worker.sh" supervised ~/myproject)
+RESULT=$("$SCRIPTS/launch-worker.sh" --name supervised --workdir ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 
 R1=$("$SCRIPTS/converse.sh" supervised "$SESSION_ID" "Write tests for the auth module" 300)
@@ -286,7 +316,7 @@ The event file at `/tmp/claude-workers/<session-id>.events.jsonl` will still con
 `send-prompt.sh` sends text literally via `tmux send-keys -l`, which handles multi-line text and special characters correctly. Very long prompts (tens of KB) may hit tmux buffer limits. For extremely large inputs, consider writing the instructions to a file and telling the worker to read it:
 ```bash
 echo "Your detailed instructions here..." > /tmp/worker-instructions.txt
-"$SCRIPTS/send-prompt.sh" my-worker "Read /tmp/worker-instructions.txt and follow those instructions"
+"$SCRIPTS/send-prompt.sh" my-worker "$SESSION_ID" "Read /tmp/worker-instructions.txt and follow those instructions"
 ```
 
 ### Tool Approval
@@ -315,7 +345,7 @@ fi
 
 The timeout is configurable via the `CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT` environment variable (default: 30 seconds). To change it, pass the env var when launching:
 ```bash
-RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=60 "$SCRIPTS/launch-worker.sh" my-worker ~/project)
+RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=60 "$SCRIPTS/launch-worker.sh" --name my-worker --workdir ~/project)
 ```
 
 ## Important Notes
