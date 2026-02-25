@@ -24,6 +24,11 @@ All scripts live at `../../scripts/` relative to this skill's base directory. Se
 
 ```bash
 SCRIPTS="<this-skill's-base-directory>/plugin/scripts"
+
+# Default to window-level orchestration when running inside tmux.
+if [ -n "${TMUX:-}" ] || [ -n "${TMUX_BEADS_SESSION:-}" ]; then
+  export CLAUDE_SESSION_DRIVER_TMUX_SCOPE=window
+fi
 ```
 
 ## Workflow
@@ -37,10 +42,10 @@ TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 ```
 
 The script:
-- Creates a detached tmux session for requested name `my-worker` (actual name may be namespaced)
+- Creates a worker tmux target for requested name `my-worker` (actual target may be namespaced)
 - Starts `claude` with the session-driver plugin loaded and `--dangerously-skip-permissions`
 - Waits for the `session_start` event (up to 30s)
-- Returns JSON with `session_id`, `tmux_name`, `requested_tmux_name`, and `events_file`
+- Returns JSON with `session_id`, `tmux_name`, `tmux_scope`, `requested_tmux_name`, and `events_file`
 
 Use `tmux_name` from the launch result for all follow-up calls when possible.
 
@@ -149,8 +154,10 @@ The script:
 If you want a human to take over an active worker session:
 
 ```
-The worker is running in tmux session 'my-worker'. You can:
-- Watch live: tmux attach -t my-worker
+The worker is running in tmux target '$TMUX_NAME'. You can:
+- Watch live:
+  - If target is a session: tmux attach -t $TMUX_NAME
+  - If target is a window (session:window): tmux attach -t ${TMUX_NAME%%:*}
 - Take over: just start typing in the attached session
 - Return to me: detach with Ctrl-B d
 ```
@@ -162,7 +169,7 @@ Leave the worker running. Do not stop it when handing off.
 | Script | Usage | Description |
 |--------|-------|-------------|
 | `converse.sh` | `<tmux-name> <session-id> <prompt> [timeout=120]` | Send prompt, wait, return response |
-| `launch-worker.sh` | `<tmux-name> <working-dir> [claude-args...]` | Start a worker session |
+| `launch-worker.sh` | `<tmux-name> <working-dir> [claude-args...]` | Start a worker target (`session` or `window`) |
 | `send-prompt.sh` | `<tmux-name> <prompt-text> [session-id]` | Send a prompt to a worker |
 | `wait-for-event.sh` | `<session-id> <event-type> [timeout=60] [--after-line N]` | Block until event or timeout |
 | `read-events.sh` | `<session-id> [--last N] [--type T] [--follow]` | Read event stream |
@@ -337,4 +344,4 @@ RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=60 "$SCRIPTS/launch-worker.sh" m
   ```
 - **Event files are append-only JSONL.** Each line is a self-contained JSON object with `ts` and `event` fields.
 - **Workers are full Claude Code sessions.** They have their own tools, context, and conversation history. They do not share state with the controller except through files on disk and the event stream.
-- **The tmux session name must be unique.** `launch-worker.sh` will fail if a session with that name already exists.
+- **The tmux target must be unique.** `launch-worker.sh` will fail if that session/window target already exists.

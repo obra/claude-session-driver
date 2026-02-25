@@ -14,7 +14,9 @@ The controller orchestrates workers through shell scripts that manage tmux sessi
 
 When `launch-worker.sh` runs inside tmux, it namespaces worker session names with the current session by default (for example, `fresh-worker-1`). This keeps worker sessions grouped with the coordinator context. Set `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_MODE=off` to disable, `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE` to override the namespace root, and `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_DELIM` to change the separator. To launch workers via a different command (for example a wrapper), set `CLAUDE_SESSION_DRIVER_LAUNCH_CMD`.
 
-`launch-worker.sh` returns both the requested tmux name and resolved `tmux_name`; use the resolved `tmux_name` for follow-up commands. `send-prompt.sh` also accepts an optional `session_id` argument for deterministic targeting when requested names collide across namespaces.
+Set `CLAUDE_SESSION_DRIVER_TMUX_SCOPE=window` to launch workers as windows in the parent tmux session (window-level orchestration). The default scope is `session`.
+
+`launch-worker.sh` returns both the requested tmux name and resolved `tmux_name` (plus `tmux_scope`); use the resolved `tmux_name` for follow-up commands. `send-prompt.sh` also accepts an optional `session_id` argument for deterministic targeting when requested names collide across namespaces.
 
 ## Installation
 
@@ -38,7 +40,7 @@ Install the plugin and ask Claude to manage a project. The `driving-claude-code-
 
 | Script | Purpose |
 |--------|---------|
-| `launch-worker.sh` | Start a worker session in tmux |
+| `launch-worker.sh` | Start a worker in tmux (session or window scope) |
 | `converse.sh` | Send a prompt, wait, return the response |
 | `send-prompt.sh` | Send a prompt without waiting (`<tmux-name> <prompt> [session-id]`) |
 | `wait-for-event.sh` | Block until a lifecycle event appears |

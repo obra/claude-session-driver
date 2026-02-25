@@ -16,25 +16,31 @@ PARENT_SESSION="ns-parent-$$"
 PARENT_SESSION_OFF="ns-parent-off-$$"
 PARENT_SESSION_DUP_A="ns-parent-dup-a-$$"
 PARENT_SESSION_DUP_B="ns-parent-dup-b-$$"
+PARENT_SESSION_WINDOW="ns-parent-window-$$"
 REQUESTED_NAME="worker"
 REQUESTED_NAME_OFF="worker-off"
 REQUESTED_NAME_DUP="worker-dup"
+REQUESTED_NAME_WINDOW="worker-window"
 TEST_NAMESPACE_DELIM="--"
 LAUNCH_JSON="$TMP_DIR/launch.json"
 LAUNCH_JSON_OFF="$TMP_DIR/launch-off.json"
 LAUNCH_JSON_DUP_A="$TMP_DIR/launch-dup-a.json"
 LAUNCH_JSON_DUP_B="$TMP_DIR/launch-dup-b.json"
+LAUNCH_JSON_WINDOW="$TMP_DIR/launch-window.json"
 
 SESSION_ID=""
 SESSION_ID_OFF=""
 SESSION_ID_DUP_A=""
 SESSION_ID_DUP_B=""
+SESSION_ID_WINDOW=""
 RESOLVED_NAME=""
 RESOLVED_NAME_OFF=""
 RESOLVED_NAME_DUP_A=""
 RESOLVED_NAME_DUP_B=""
+RESOLVED_NAME_WINDOW=""
 EXPECTED_NAME_DUP_A=""
 EXPECTED_NAME_DUP_B=""
+EXPECTED_NAME_WINDOW=""
 
 fail() {
   echo "FAIL: $1"
@@ -66,6 +72,7 @@ cleanup() {
   tmux kill-session -t "$PARENT_SESSION_OFF" 2>/dev/null || true
   tmux kill-session -t "$PARENT_SESSION_DUP_A" 2>/dev/null || true
   tmux kill-session -t "$PARENT_SESSION_DUP_B" 2>/dev/null || true
+  tmux kill-session -t "$PARENT_SESSION_WINDOW" 2>/dev/null || true
   if [ -n "$RESOLVED_NAME" ]; then
     tmux kill-session -t "$RESOLVED_NAME" 2>/dev/null || true
   fi
@@ -89,6 +96,9 @@ cleanup() {
   fi
   if [ -n "$SESSION_ID_DUP_B" ]; then
     rm -f "/tmp/claude-workers/${SESSION_ID_DUP_B}.events.jsonl" "/tmp/claude-workers/${SESSION_ID_DUP_B}.meta"
+  fi
+  if [ -n "$SESSION_ID_WINDOW" ]; then
+    rm -f "/tmp/claude-workers/${SESSION_ID_WINDOW}.events.jsonl" "/tmp/claude-workers/${SESSION_ID_WINDOW}.meta"
   fi
   rm -rf "$TMP_DIR"
 }
@@ -330,6 +340,68 @@ if [ -n "$SESSION_ID_DUP_B" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQ
   fi
 else
   fail "stop-worker failed for duplicate session B"
+fi
+
+RUN_WINDOW="$TMP_DIR/run-window.sh"
+cat > "$RUN_WINDOW" <<EOF
+#!/bin/bash
+set -euo pipefail
+CLAUDE_SESSION_DRIVER_LAUNCH_CMD="$MOCK_CLAUDE" \
+CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_MODE=inherit \
+CLAUDE_SESSION_DRIVER_TMUX_SCOPE=window \
+  bash "$PLUGIN_DIR/scripts/launch-worker.sh" "$REQUESTED_NAME_WINDOW" /tmp > "$LAUNCH_JSON_WINDOW"
+sleep 15
+EOF
+chmod +x "$RUN_WINDOW"
+
+EXPECTED_NAME_WINDOW="${PARENT_SESSION_WINDOW}:${REQUESTED_NAME_WINDOW}"
+
+echo "=== Test window scope ==="
+
+# --- Test 11: window scope launches in parent session window ---
+run_test
+if tmux new-session -d -s "$PARENT_SESSION_WINDOW" "$RUN_WINDOW"; then
+  if wait_for_file "$LAUNCH_JSON_WINDOW" 100; then
+    RESOLVED_NAME_WINDOW="$(jq -r '.tmux_name // empty' "$LAUNCH_JSON_WINDOW")"
+    SESSION_ID_WINDOW="$(jq -r '.session_id // empty' "$LAUNCH_JSON_WINDOW")"
+    OUTPUT_SCOPE_WINDOW="$(jq -r '.tmux_scope // empty' "$LAUNCH_JSON_WINDOW")"
+    if [ "$RESOLVED_NAME_WINDOW" = "$EXPECTED_NAME_WINDOW" ] && \
+       [ "$OUTPUT_SCOPE_WINDOW" = "window" ] && \
+       [ -n "$SESSION_ID_WINDOW" ] && \
+       tmux list-windows -t "$PARENT_SESSION_WINDOW" -F '#W' | grep -Fxq "$REQUESTED_NAME_WINDOW"; then
+      pass "window scope launched worker window in parent session"
+    else
+      fail "unexpected window launch output: target='$RESOLVED_NAME_WINDOW' scope='$OUTPUT_SCOPE_WINDOW' session='$SESSION_ID_WINDOW'"
+    fi
+  else
+    fail "window launch output file not created"
+  fi
+else
+  fail "failed to create window-scope parent tmux session"
+fi
+
+# --- Test 12: send-prompt targets window scope worker ---
+run_test
+if [ -n "$SESSION_ID_WINDOW" ] && \
+   bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$REQUESTED_NAME_WINDOW" "window scope prompt" "$SESSION_ID_WINDOW" >/dev/null 2>&1; then
+  pass "send-prompt targeted window worker by session_id"
+else
+  fail "send-prompt failed for window scope worker"
+fi
+
+# --- Test 13: stop-worker removes worker window and keeps parent session ---
+run_test
+if [ -n "$SESSION_ID_WINDOW" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQUESTED_NAME_WINDOW" "$SESSION_ID_WINDOW" >/dev/null 2>&1; then
+  if tmux has-session -t "$PARENT_SESSION_WINDOW" 2>/dev/null && \
+     ! tmux list-panes -t "$EXPECTED_NAME_WINDOW" >/dev/null 2>&1 && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_WINDOW}.events.jsonl" ] && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_WINDOW}.meta" ]; then
+    pass "window scope stop-worker removed window and kept parent session"
+  else
+    fail "window scope cleanup failed"
+  fi
+else
+  fail "stop-worker failed for window scope worker"
 fi
 
 echo ""
