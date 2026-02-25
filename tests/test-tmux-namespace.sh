@@ -14,16 +14,27 @@ TMP_DIR="$(mktemp -d)"
 MOCK_CLAUDE="$TMP_DIR/mock-claude.sh"
 PARENT_SESSION="ns-parent-$$"
 PARENT_SESSION_OFF="ns-parent-off-$$"
+PARENT_SESSION_DUP_A="ns-parent-dup-a-$$"
+PARENT_SESSION_DUP_B="ns-parent-dup-b-$$"
 REQUESTED_NAME="worker"
 REQUESTED_NAME_OFF="worker-off"
+REQUESTED_NAME_DUP="worker-dup"
 TEST_NAMESPACE_DELIM="--"
 LAUNCH_JSON="$TMP_DIR/launch.json"
 LAUNCH_JSON_OFF="$TMP_DIR/launch-off.json"
+LAUNCH_JSON_DUP_A="$TMP_DIR/launch-dup-a.json"
+LAUNCH_JSON_DUP_B="$TMP_DIR/launch-dup-b.json"
 
 SESSION_ID=""
 SESSION_ID_OFF=""
+SESSION_ID_DUP_A=""
+SESSION_ID_DUP_B=""
 RESOLVED_NAME=""
 RESOLVED_NAME_OFF=""
+RESOLVED_NAME_DUP_A=""
+RESOLVED_NAME_DUP_B=""
+EXPECTED_NAME_DUP_A=""
+EXPECTED_NAME_DUP_B=""
 
 fail() {
   echo "FAIL: $1"
@@ -53,17 +64,31 @@ wait_for_file() {
 cleanup() {
   tmux kill-session -t "$PARENT_SESSION" 2>/dev/null || true
   tmux kill-session -t "$PARENT_SESSION_OFF" 2>/dev/null || true
+  tmux kill-session -t "$PARENT_SESSION_DUP_A" 2>/dev/null || true
+  tmux kill-session -t "$PARENT_SESSION_DUP_B" 2>/dev/null || true
   if [ -n "$RESOLVED_NAME" ]; then
     tmux kill-session -t "$RESOLVED_NAME" 2>/dev/null || true
   fi
   if [ -n "$RESOLVED_NAME_OFF" ]; then
     tmux kill-session -t "$RESOLVED_NAME_OFF" 2>/dev/null || true
   fi
+  if [ -n "$RESOLVED_NAME_DUP_A" ]; then
+    tmux kill-session -t "$RESOLVED_NAME_DUP_A" 2>/dev/null || true
+  fi
+  if [ -n "$RESOLVED_NAME_DUP_B" ]; then
+    tmux kill-session -t "$RESOLVED_NAME_DUP_B" 2>/dev/null || true
+  fi
   if [ -n "$SESSION_ID" ]; then
     rm -f "/tmp/claude-workers/${SESSION_ID}.events.jsonl" "/tmp/claude-workers/${SESSION_ID}.meta"
   fi
   if [ -n "$SESSION_ID_OFF" ]; then
     rm -f "/tmp/claude-workers/${SESSION_ID_OFF}.events.jsonl" "/tmp/claude-workers/${SESSION_ID_OFF}.meta"
+  fi
+  if [ -n "$SESSION_ID_DUP_A" ]; then
+    rm -f "/tmp/claude-workers/${SESSION_ID_DUP_A}.events.jsonl" "/tmp/claude-workers/${SESSION_ID_DUP_A}.meta"
+  fi
+  if [ -n "$SESSION_ID_DUP_B" ]; then
+    rm -f "/tmp/claude-workers/${SESSION_ID_DUP_B}.events.jsonl" "/tmp/claude-workers/${SESSION_ID_DUP_B}.meta"
   fi
   rm -rf "$TMP_DIR"
 }
@@ -207,6 +232,104 @@ if [ -n "$SESSION_ID_OFF" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQUE
   fi
 else
   fail "off mode stop-worker failed"
+fi
+
+RUN_DUP_A="$TMP_DIR/run-dup-a.sh"
+cat > "$RUN_DUP_A" <<EOF
+#!/bin/bash
+set -euo pipefail
+CLAUDE_SESSION_DRIVER_LAUNCH_CMD="$MOCK_CLAUDE" \
+CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_MODE=inherit \
+CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_DELIM="$TEST_NAMESPACE_DELIM" \
+  bash "$PLUGIN_DIR/scripts/launch-worker.sh" "$REQUESTED_NAME_DUP" /tmp > "$LAUNCH_JSON_DUP_A"
+sleep 15
+EOF
+chmod +x "$RUN_DUP_A"
+
+RUN_DUP_B="$TMP_DIR/run-dup-b.sh"
+cat > "$RUN_DUP_B" <<EOF
+#!/bin/bash
+set -euo pipefail
+CLAUDE_SESSION_DRIVER_LAUNCH_CMD="$MOCK_CLAUDE" \
+CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_MODE=inherit \
+CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_DELIM="$TEST_NAMESPACE_DELIM" \
+  bash "$PLUGIN_DIR/scripts/launch-worker.sh" "$REQUESTED_NAME_DUP" /tmp > "$LAUNCH_JSON_DUP_B"
+sleep 15
+EOF
+chmod +x "$RUN_DUP_B"
+
+EXPECTED_NAME_DUP_A="${PARENT_SESSION_DUP_A}${TEST_NAMESPACE_DELIM}${REQUESTED_NAME_DUP}"
+EXPECTED_NAME_DUP_B="${PARENT_SESSION_DUP_B}${TEST_NAMESPACE_DELIM}${REQUESTED_NAME_DUP}"
+
+echo "=== Test duplicate requested names ==="
+
+# --- Test 6: duplicate requested names can coexist across namespaces ---
+run_test
+if tmux new-session -d -s "$PARENT_SESSION_DUP_A" "$RUN_DUP_A" && \
+   tmux new-session -d -s "$PARENT_SESSION_DUP_B" "$RUN_DUP_B"; then
+  if wait_for_file "$LAUNCH_JSON_DUP_A" 100 && wait_for_file "$LAUNCH_JSON_DUP_B" 100; then
+    RESOLVED_NAME_DUP_A="$(jq -r '.tmux_name // empty' "$LAUNCH_JSON_DUP_A")"
+    RESOLVED_NAME_DUP_B="$(jq -r '.tmux_name // empty' "$LAUNCH_JSON_DUP_B")"
+    SESSION_ID_DUP_A="$(jq -r '.session_id // empty' "$LAUNCH_JSON_DUP_A")"
+    SESSION_ID_DUP_B="$(jq -r '.session_id // empty' "$LAUNCH_JSON_DUP_B")"
+    if [ "$RESOLVED_NAME_DUP_A" = "$EXPECTED_NAME_DUP_A" ] && \
+       [ "$RESOLVED_NAME_DUP_B" = "$EXPECTED_NAME_DUP_B" ] && \
+       [ -n "$SESSION_ID_DUP_A" ] && [ -n "$SESSION_ID_DUP_B" ]; then
+      pass "duplicate requested names resolved into unique namespaced sessions"
+    else
+      fail "unexpected duplicate launch output: a='$RESOLVED_NAME_DUP_A' b='$RESOLVED_NAME_DUP_B'"
+    fi
+  else
+    fail "duplicate launch output files not created"
+  fi
+else
+  fail "failed to create duplicate parent tmux sessions"
+fi
+
+# --- Test 7: send-prompt can target duplicate names using session_id (A) ---
+run_test
+if [ -n "$SESSION_ID_DUP_A" ] && \
+   bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$REQUESTED_NAME_DUP" "duplicate namespace prompt A" "$SESSION_ID_DUP_A" >/dev/null 2>&1; then
+  pass "send-prompt targeted worker A by session_id"
+else
+  fail "send-prompt failed to target worker A by session_id"
+fi
+
+# --- Test 8: send-prompt can target duplicate names using session_id (B) ---
+run_test
+if [ -n "$SESSION_ID_DUP_B" ] && \
+   bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$REQUESTED_NAME_DUP" "duplicate namespace prompt B" "$SESSION_ID_DUP_B" >/dev/null 2>&1; then
+  pass "send-prompt targeted worker B by session_id"
+else
+  fail "send-prompt failed to target worker B by session_id"
+fi
+
+# --- Test 9: stop-worker cleanup for duplicate session A ---
+run_test
+if [ -n "$SESSION_ID_DUP_A" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQUESTED_NAME_DUP" "$SESSION_ID_DUP_A" >/dev/null 2>&1; then
+  if ! tmux has-session -t "$EXPECTED_NAME_DUP_A" 2>/dev/null && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_DUP_A}.events.jsonl" ] && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_DUP_A}.meta" ]; then
+    pass "duplicate session A stopped and cleaned up"
+  else
+    fail "duplicate session A cleanup incomplete"
+  fi
+else
+  fail "stop-worker failed for duplicate session A"
+fi
+
+# --- Test 10: stop-worker cleanup for duplicate session B ---
+run_test
+if [ -n "$SESSION_ID_DUP_B" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQUESTED_NAME_DUP" "$SESSION_ID_DUP_B" >/dev/null 2>&1; then
+  if ! tmux has-session -t "$EXPECTED_NAME_DUP_B" 2>/dev/null && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_DUP_B}.events.jsonl" ] && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_DUP_B}.meta" ]; then
+    pass "duplicate session B stopped and cleaned up"
+  else
+    fail "duplicate session B cleanup incomplete"
+  fi
+else
+  fail "stop-worker failed for duplicate session B"
 fi
 
 echo ""

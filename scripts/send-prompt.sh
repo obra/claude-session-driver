@@ -4,10 +4,23 @@ set -euo pipefail
 # Sends a prompt to a Claude Code worker session running in tmux.
 # Uses literal mode (-l) to prevent tmux from interpreting prompt content as key names.
 #
-# Usage: send-prompt.sh <tmux-name> <prompt-text>
+# Usage: send-prompt.sh <tmux-name> <prompt-text> [session-id]
 
 resolve_tmux_name() {
   local requested="$1"
+  local session_id="${2:-}"
+
+  if [ -n "$session_id" ]; then
+    local session_meta_file="/tmp/claude-workers/${session_id}.meta"
+    local session_tmux_name=""
+    if [ -f "$session_meta_file" ]; then
+      session_tmux_name="$(jq -r '.tmux_name // empty' "$session_meta_file" 2>/dev/null || true)"
+      if [ -n "$session_tmux_name" ] && tmux has-session -t "$session_tmux_name" 2>/dev/null; then
+        printf '%s\n' "$session_tmux_name"
+        return 0
+      fi
+    fi
+  fi
 
   if tmux has-session -t "$requested" 2>/dev/null; then
     printf '%s\n' "$requested"
@@ -44,13 +57,16 @@ resolve_tmux_name() {
   printf '%s\n' "$requested"
 }
 
-TMUX_NAME_INPUT="${1:?Usage: send-prompt.sh <tmux-name> <prompt-text>}"
-PROMPT_TEXT="${2:?Usage: send-prompt.sh <tmux-name> <prompt-text>}"
-TMUX_NAME="$(resolve_tmux_name "$TMUX_NAME_INPUT")"
+TMUX_NAME_INPUT="${1:?Usage: send-prompt.sh <tmux-name> <prompt-text> [session-id]}"
+PROMPT_TEXT="${2:?Usage: send-prompt.sh <tmux-name> <prompt-text> [session-id]}"
+SESSION_ID="${3:-}"
+TMUX_NAME="$(resolve_tmux_name "$TMUX_NAME_INPUT" "$SESSION_ID")"
 
 # Verify tmux session exists
 if ! tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
-  if [ "$TMUX_NAME" != "$TMUX_NAME_INPUT" ]; then
+  if [ -n "$SESSION_ID" ]; then
+    echo "Error: session '$SESSION_ID' does not map to a running tmux target (resolved '$TMUX_NAME')" >&2
+  elif [ "$TMUX_NAME" != "$TMUX_NAME_INPUT" ]; then
     echo "Error: tmux session '$TMUX_NAME_INPUT' resolved to '$TMUX_NAME', but it no longer exists" >&2
   else
     echo "Error: tmux session '$TMUX_NAME' does not exist" >&2

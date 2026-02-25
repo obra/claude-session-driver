@@ -37,10 +37,12 @@ TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 ```
 
 The script:
-- Creates a detached tmux session named `my-worker`
+- Creates a detached tmux session for requested name `my-worker` (actual name may be namespaced)
 - Starts `claude` with the session-driver plugin loaded and `--dangerously-skip-permissions`
 - Waits for the `session_start` event (up to 30s)
-- Returns JSON with `session_id`, `tmux_name`, and `events_file`
+- Returns JSON with `session_id`, `tmux_name`, `requested_tmux_name`, and `events_file`
+
+Use `tmux_name` from the launch result for all follow-up calls when possible.
 
 Permission bypass is automatic. The worker's PreToolUse hook provides controller-based gating (see Tool Approval below), so the built-in interactive permission dialog is redundant.
 
@@ -55,15 +57,15 @@ RESULT=$("$SCRIPTS/launch-worker.sh" my-worker /path/to/project --model sonnet)
 For most interactions, use `converse.sh` — it sends the prompt, waits for the worker to finish, and returns the assistant's response in one call:
 
 ```bash
-RESPONSE=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Refactor the auth module to use JWT tokens" 300)
+RESPONSE=$("$SCRIPTS/converse.sh" "$TMUX_NAME" "$SESSION_ID" "Refactor the auth module to use JWT tokens" 300)
 echo "$RESPONSE"
 ```
 
 It handles `--after-line` tracking automatically, so multi-turn conversations just work:
 
 ```bash
-R1=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Write tests for the auth module" 300)
-R2=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
+R1=$("$SCRIPTS/converse.sh" "$TMUX_NAME" "$SESSION_ID" "Write tests for the auth module" 300)
+R2=$("$SCRIPTS/converse.sh" "$TMUX_NAME" "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
 ```
 
 ### 3. Send a Prompt (Low-Level)
@@ -71,7 +73,7 @@ R2=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Now add edge case tests for
 For finer control, use the individual scripts. `send-prompt.sh` sends text without waiting:
 
 ```bash
-"$SCRIPTS/send-prompt.sh" my-worker "Refactor the auth module to use JWT tokens"
+"$SCRIPTS/send-prompt.sh" "$TMUX_NAME" "Refactor the auth module to use JWT tokens" "$SESSION_ID"
 ```
 
 ### 4. Wait for the Worker to Finish
@@ -161,7 +163,7 @@ Leave the worker running. Do not stop it when handing off.
 |--------|-------|-------------|
 | `converse.sh` | `<tmux-name> <session-id> <prompt> [timeout=120]` | Send prompt, wait, return response |
 | `launch-worker.sh` | `<tmux-name> <working-dir> [claude-args...]` | Start a worker session |
-| `send-prompt.sh` | `<tmux-name> <prompt-text>` | Send a prompt to a worker |
+| `send-prompt.sh` | `<tmux-name> <prompt-text> [session-id]` | Send a prompt to a worker |
 | `wait-for-event.sh` | `<session-id> <event-type> [timeout=60] [--after-line N]` | Block until event or timeout |
 | `read-events.sh` | `<session-id> [--last N] [--type T] [--follow]` | Read event stream |
 | `stop-worker.sh` | `<tmux-name> <session-id>` | Gracefully stop and clean up |
@@ -177,13 +179,14 @@ All scripts exit 0 on success, non-zero on failure. Error messages go to stderr.
 ```bash
 RESULT=$("$SCRIPTS/launch-worker.sh" task-worker ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
+TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 
-"$SCRIPTS/send-prompt.sh" task-worker "Run the test suite and fix any failures"
+"$SCRIPTS/send-prompt.sh" "$TMUX_NAME" "Run the test suite and fix any failures" "$SESSION_ID"
 "$SCRIPTS/wait-for-event.sh" "$SESSION_ID" stop 600
 
 # Read what happened, then clean up
 "$SCRIPTS/read-events.sh" "$SESSION_ID"
-"$SCRIPTS/stop-worker.sh" task-worker "$SESSION_ID"
+"$SCRIPTS/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID"
 ```
 
 ### Fan-Out: Multiple Workers in Parallel
@@ -192,21 +195,23 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 # Launch workers for different tasks
 R1=$("$SCRIPTS/launch-worker.sh" worker-api ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
+T1=$(echo "$R1" | jq -r '.tmux_name')
 
 R2=$("$SCRIPTS/launch-worker.sh" worker-ui ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
+T2=$(echo "$R2" | jq -r '.tmux_name')
 
 # Send each their task
-"$SCRIPTS/send-prompt.sh" worker-api "Add pagination to the /users endpoint"
-"$SCRIPTS/send-prompt.sh" worker-ui "Add a loading spinner to the user list page"
+"$SCRIPTS/send-prompt.sh" "$T1" "Add pagination to the /users endpoint" "$S1"
+"$SCRIPTS/send-prompt.sh" "$T2" "Add a loading spinner to the user list page" "$S2"
 
 # Wait for both (sequentially -- first one to finish unblocks its wait)
 "$SCRIPTS/wait-for-event.sh" "$S1" stop 600
 "$SCRIPTS/wait-for-event.sh" "$S2" stop 600
 
 # Clean up
-"$SCRIPTS/stop-worker.sh" worker-api "$S1"
-"$SCRIPTS/stop-worker.sh" worker-ui "$S2"
+"$SCRIPTS/stop-worker.sh" "$T1" "$S1"
+"$SCRIPTS/stop-worker.sh" "$T2" "$S2"
 ```
 
 ### Pipeline: Chained Workers
@@ -217,18 +222,20 @@ Pass one worker's output to the next:
 # Worker 1: Generate an API spec
 R1=$("$SCRIPTS/launch-worker.sh" worker-spec ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
-"$SCRIPTS/send-prompt.sh" worker-spec "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml"
+T1=$(echo "$R1" | jq -r '.tmux_name')
+"$SCRIPTS/send-prompt.sh" "$T1" "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml" "$S1"
 "$SCRIPTS/wait-for-event.sh" "$S1" stop 300
 
 # Worker 2: Implement from the spec that Worker 1 produced
 R2=$("$SCRIPTS/launch-worker.sh" worker-impl ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
-"$SCRIPTS/send-prompt.sh" worker-impl "Implement the API endpoint defined in /tmp/api-spec.yaml"
+T2=$(echo "$R2" | jq -r '.tmux_name')
+"$SCRIPTS/send-prompt.sh" "$T2" "Implement the API endpoint defined in /tmp/api-spec.yaml" "$S2"
 "$SCRIPTS/wait-for-event.sh" "$S2" stop 600
 
 # Clean up both
-"$SCRIPTS/stop-worker.sh" worker-spec "$S1"
-"$SCRIPTS/stop-worker.sh" worker-impl "$S2"
+"$SCRIPTS/stop-worker.sh" "$T1" "$S1"
+"$SCRIPTS/stop-worker.sh" "$T2" "$S2"
 ```
 
 The key: workers communicate through files on disk. The controller orchestrates the sequence.
@@ -240,11 +247,12 @@ The key: workers communicate through files on disk. The controller orchestrates 
 ```bash
 RESULT=$("$SCRIPTS/launch-worker.sh" supervised ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
+TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 
-R1=$("$SCRIPTS/converse.sh" supervised "$SESSION_ID" "Write tests for the auth module" 300)
-R2=$("$SCRIPTS/converse.sh" supervised "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
+R1=$("$SCRIPTS/converse.sh" "$TMUX_NAME" "$SESSION_ID" "Write tests for the auth module" 300)
+R2=$("$SCRIPTS/converse.sh" "$TMUX_NAME" "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
 
-"$SCRIPTS/stop-worker.sh" supervised "$SESSION_ID"
+"$SCRIPTS/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID"
 ```
 
 ### Reviewing Worker Output
@@ -267,7 +275,7 @@ Output is formatted as markdown: thinking in blockquotes, tool calls as code blo
 
 If the tmux session disappears, `send-prompt.sh` will fail with "tmux session does not exist." Check before sending:
 ```bash
-if ! tmux has-session -t my-worker 2>/dev/null; then
+if ! tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
   echo "Worker is gone -- need to relaunch"
 fi
 ```
@@ -286,7 +294,7 @@ The event file at `/tmp/claude-workers/<session-id>.events.jsonl` will still con
 `send-prompt.sh` sends text literally via `tmux send-keys -l`, which handles multi-line text and special characters correctly. Very long prompts (tens of KB) may hit tmux buffer limits. For extremely large inputs, consider writing the instructions to a file and telling the worker to read it:
 ```bash
 echo "Your detailed instructions here..." > /tmp/worker-instructions.txt
-"$SCRIPTS/send-prompt.sh" my-worker "Read /tmp/worker-instructions.txt and follow those instructions"
+"$SCRIPTS/send-prompt.sh" "$TMUX_NAME" "Read /tmp/worker-instructions.txt and follow those instructions" "$SESSION_ID"
 ```
 
 ### Tool Approval
