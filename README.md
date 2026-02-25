@@ -12,6 +12,8 @@ Each worker session loads hooks that write lifecycle events to a JSONL file: ses
 
 The controller orchestrates workers through shell scripts that manage tmux sessions, poll events, read conversation logs, and clean up.
 
+When `launch-worker.sh` runs inside tmux, it namespaces worker session names with the current session by default (for example, `fresh-worker-1`). This keeps worker sessions grouped with the coordinator context. Set `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_MODE=off` to disable, `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE` to override the namespace root, and `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_DELIM` to change the separator. To launch workers via a different command (for example a wrapper), set `CLAUDE_SESSION_DRIVER_LAUNCH_CMD`.
+
 ## Installation
 
 ```bash
