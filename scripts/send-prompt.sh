@@ -16,6 +16,7 @@ resolve_tmux_name() {
 
   local meta_file resolved candidate=""
   local match_count=0
+  local seen=$'\n'
   while IFS= read -r meta_file; do
     resolved="$(jq -r --arg requested "$requested" 'select(.requested_tmux_name == $requested) | .tmux_name // empty' "$meta_file" 2>/dev/null || true)"
     if [ -z "$resolved" ]; then
@@ -23,8 +24,15 @@ resolve_tmux_name() {
     fi
 
     if tmux has-session -t "$resolved" 2>/dev/null; then
-      candidate="$resolved"
-      match_count=$((match_count + 1))
+      case "$seen" in
+        *$'\n'"$resolved"$'\n'*)
+          ;;
+        *)
+          seen+="$resolved"$'\n'
+          candidate="$resolved"
+          match_count=$((match_count + 1))
+          ;;
+      esac
     fi
   done < <(find /tmp/claude-workers -maxdepth 1 -type f -name '*.meta' 2>/dev/null | sort)
 

@@ -91,10 +91,15 @@ for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
   LAUNCH_CMD+=" $(printf '%q' "$arg")"
 done
 
+LAUNCH_SHELL="zsh"
+if ! command -v zsh >/dev/null 2>&1; then
+  LAUNCH_SHELL="bash"
+fi
+
 tmux new-session -d -s "$TMUX_NAME" -c "$WORKING_DIR" \
   -e "CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=$APPROVAL_TIMEOUT" \
   -e "CLAUDECODE=" \
-  zsh -lic "$LAUNCH_CMD"
+  "$LAUNCH_SHELL" -lic "$LAUNCH_CMD"
 
 # Accept the workspace trust dialog (default selection is "Yes, I trust this folder")
 sleep 3

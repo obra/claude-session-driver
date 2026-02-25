@@ -199,7 +199,9 @@ fi
 # --- Test 5: off mode stop-worker cleanup still works ---
 run_test
 if [ -n "$SESSION_ID_OFF" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQUESTED_NAME_OFF" "$SESSION_ID_OFF" >/dev/null 2>&1; then
-  if ! tmux has-session -t "$REQUESTED_NAME_OFF" 2>/dev/null; then
+  if ! tmux has-session -t "$REQUESTED_NAME_OFF" 2>/dev/null && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_OFF}.events.jsonl" ] && \
+     [ ! -f "/tmp/claude-workers/${SESSION_ID_OFF}.meta" ]; then
     pass "off mode worker stopped cleanly"
   else
     fail "off mode worker still running after stop"
