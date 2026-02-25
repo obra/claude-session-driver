@@ -41,8 +41,7 @@ run_test() {
 wait_for_file() {
   local path="$1"
   local timeout="${2:-50}"
-  local i
-  for i in $(seq 1 "$timeout"); do
+  for _ in $(seq 1 "$timeout"); do
     if [ -s "$path" ]; then
       return 0
     fi

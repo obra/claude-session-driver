@@ -51,7 +51,7 @@ TMUX_NAME="$(resolve_tmux_name "$TMUX_NAME_INPUT")"
 # Verify tmux session exists
 if ! tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
   if [ "$TMUX_NAME" != "$TMUX_NAME_INPUT" ]; then
-    echo "Error: tmux session '$TMUX_NAME_INPUT' resolved to '$TMUX_NAME', but neither exists" >&2
+    echo "Error: tmux session '$TMUX_NAME_INPUT' resolved to '$TMUX_NAME', but it no longer exists" >&2
   else
     echo "Error: tmux session '$TMUX_NAME' does not exist" >&2
   fi
