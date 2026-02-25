@@ -314,6 +314,14 @@ else
   fail "send-prompt failed to target worker B by session_id"
 fi
 
+# --- Test 8b: invalid session_id must not route to duplicate worker ---
+run_test
+if bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$REQUESTED_NAME_DUP" "duplicate namespace prompt invalid" "missing-session-id" >/dev/null 2>&1; then
+  fail "send-prompt should fail for unknown session_id in duplicate-name mode"
+else
+  pass "send-prompt rejects unknown session_id in duplicate-name mode"
+fi
+
 # --- Test 9: stop-worker cleanup for duplicate session A ---
 run_test
 if [ -n "$SESSION_ID_DUP_A" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQUESTED_NAME_DUP" "$SESSION_ID_DUP_A" >/dev/null 2>&1; then

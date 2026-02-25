@@ -20,11 +20,14 @@ resolve_tmux_name() {
     local session_tmux_name=""
     if [ -f "$session_meta_file" ]; then
       session_tmux_name="$(jq -r '.tmux_name // empty' "$session_meta_file" 2>/dev/null || true)"
-      if [ -n "$session_tmux_name" ] && tmux_target_exists "$session_tmux_name"; then
-        printf '%s\n' "$session_tmux_name"
-        return 0
-      fi
     fi
+
+    if [ -n "$session_tmux_name" ] && tmux_target_exists "$session_tmux_name"; then
+      printf '%s\n' "$session_tmux_name"
+      return 0
+    fi
+
+    return 1
   fi
 
   if tmux_target_exists "$requested"; then
@@ -65,7 +68,10 @@ resolve_tmux_name() {
 TMUX_NAME_INPUT="${1:?Usage: send-prompt.sh <tmux-name> <prompt-text> [session-id]}"
 PROMPT_TEXT="${2:?Usage: send-prompt.sh <tmux-name> <prompt-text> [session-id]}"
 SESSION_ID="${3:-}"
-TMUX_NAME="$(resolve_tmux_name "$TMUX_NAME_INPUT" "$SESSION_ID")"
+if ! TMUX_NAME="$(resolve_tmux_name "$TMUX_NAME_INPUT" "$SESSION_ID")"; then
+  echo "Error: session '$SESSION_ID' does not map to a running tmux target" >&2
+  exit 1
+fi
 
 # Verify tmux target exists
 if ! tmux_target_exists "$TMUX_NAME"; then
