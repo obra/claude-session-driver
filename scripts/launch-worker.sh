@@ -139,8 +139,9 @@ fi
 # Propagate approval timeout through tmux to the hook environment
 APPROVAL_TIMEOUT="${CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT:-30}"
 
-# Launch worker in detached tmux via interactive zsh so aliases (e.g. `clauded`)
-# are available. Keep --dangerously-skip-permissions to avoid interactive stalls.
+# Launch worker in detached tmux via interactive login shell (prefer zsh, fall
+# back to bash) so aliases (e.g. `clauded`) are available.
+# Keep --dangerously-skip-permissions to avoid interactive stalls.
 LAUNCH_CMD="$CLAUDE_LAUNCH_CMD --session-id $(printf '%q' "$SESSION_ID") --plugin-dir $(printf '%q' "$PLUGIN_DIR") --dangerously-skip-permissions"
 for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
   LAUNCH_CMD+=" $(printf '%q' "$arg")"

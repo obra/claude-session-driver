@@ -283,7 +283,7 @@ Output is formatted as markdown: thinking in blockquotes, tool calls as code blo
 If the tmux target disappears, `send-prompt.sh` will fail with "tmux target does not exist." Check before sending:
 ```bash
 TMUX_TARGET="$TMUX_NAME"
-if ! tmux has-session -t "$TMUX_TARGET" 2>/dev/null; then
+if ! tmux list-panes -t "$TMUX_TARGET" >/dev/null 2>&1; then
   echo "Worker target is gone -- need to relaunch"
 fi
 ```
