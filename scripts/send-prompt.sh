@@ -11,6 +11,10 @@ tmux_target_exists() {
   tmux list-panes -t "$target" >/dev/null 2>&1
 }
 
+# 0: resolved and stored in RESOLVED_TMUX_NAME
+# 1: session_id provided but does not map to running target
+# 2: no running target matched requested name
+# 3: multiple running targets matched requested name
 resolve_tmux_name() {
   local requested="$1"
   local session_id="${2:-}"
@@ -23,7 +27,7 @@ resolve_tmux_name() {
     fi
 
     if [ -n "$session_tmux_name" ] && tmux_target_exists "$session_tmux_name"; then
-      printf '%s\n' "$session_tmux_name"
+      RESOLVED_TMUX_NAME="$session_tmux_name"
       return 0
     fi
 
@@ -31,7 +35,7 @@ resolve_tmux_name() {
   fi
 
   if tmux_target_exists "$requested"; then
-    printf '%s\n' "$requested"
+    RESOLVED_TMUX_NAME="$requested"
     return 0
   fi
 
@@ -58,18 +62,40 @@ resolve_tmux_name() {
   done < <(find /tmp/claude-workers -maxdepth 1 -type f -name '*.meta' 2>/dev/null | sort)
 
   if [ "$match_count" -eq 1 ]; then
-    printf '%s\n' "$candidate"
+    RESOLVED_TMUX_NAME="$candidate"
     return 0
   fi
 
-  printf '%s\n' "$requested"
+  RESOLVE_MATCH_COUNT="$match_count"
+  if [ "$match_count" -eq 0 ]; then
+    return 2
+  fi
+  return 3
 }
 
 TMUX_NAME_INPUT="${1:?Usage: send-prompt.sh <tmux-name> <prompt-text> [session-id]}"
 PROMPT_TEXT="${2:?Usage: send-prompt.sh <tmux-name> <prompt-text> [session-id]}"
 SESSION_ID="${3:-}"
-if ! TMUX_NAME="$(resolve_tmux_name "$TMUX_NAME_INPUT" "$SESSION_ID")"; then
-  echo "Error: session '$SESSION_ID' does not map to a running tmux target" >&2
+RESOLVED_TMUX_NAME=""
+RESOLVE_MATCH_COUNT=0
+if resolve_tmux_name "$TMUX_NAME_INPUT" "$SESSION_ID"; then
+  TMUX_NAME="$RESOLVED_TMUX_NAME"
+else
+  RESOLVE_STATUS=$?
+  case "$RESOLVE_STATUS" in
+    1)
+      echo "Error: session '$SESSION_ID' does not map to a running tmux target" >&2
+      ;;
+    2)
+      echo "Error: no running worker matches requested name '$TMUX_NAME_INPUT'. If workers are namespaced, pass a session id: send-prompt.sh '$TMUX_NAME_INPUT' '<prompt>' '<session-id>'" >&2
+      ;;
+    3)
+      echo "Error: ${RESOLVE_MATCH_COUNT} workers match requested name '$TMUX_NAME_INPUT'. Disambiguate with: send-prompt.sh '$TMUX_NAME_INPUT' '<prompt>' '<session-id>'" >&2
+      ;;
+    *)
+      echo "Error: could not resolve tmux target for '$TMUX_NAME_INPUT'" >&2
+      ;;
+  esac
   exit 1
 fi
 

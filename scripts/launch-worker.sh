@@ -14,7 +14,7 @@ EXTRA_ARGS=("$@")
 # Resolve plugin directory (parent of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CLAUDE_LAUNCH_CMD="${CLAUDE_SESSION_DRIVER_LAUNCH_CMD:-claude}"
+CLAUDE_LAUNCH_BIN="${CLAUDE_SESSION_DRIVER_LAUNCH_CMD:-claude}"
 
 # Resolve worker tmux target. By default, workers are launched as tmux sessions.
 # Set CLAUDE_SESSION_DRIVER_TMUX_SCOPE=window to launch workers as windows
@@ -23,6 +23,7 @@ NAMESPACE_MODE="${CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_MODE:-inherit}"
 NAMESPACE_DELIM="${CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_DELIM:--}"
 TMUX_NAMESPACE="${CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE:-}"
 TMUX_SCOPE="${CLAUDE_SESSION_DRIVER_TMUX_SCOPE:-session}"
+INFER_NAMESPACE="${CLAUDE_SESSION_DRIVER_INFER_NAMESPACE:-false}"
 
 case "$NAMESPACE_MODE" in
   inherit|off)
@@ -42,6 +43,15 @@ case "$TMUX_SCOPE" in
     ;;
 esac
 
+case "$INFER_NAMESPACE" in
+  true|false)
+    ;;
+  *)
+    echo "Error: invalid CLAUDE_SESSION_DRIVER_INFER_NAMESPACE '$INFER_NAMESPACE' (use true|false)" >&2
+    exit 1
+    ;;
+esac
+
 if [ -z "$TMUX_NAMESPACE" ] && [ "$NAMESPACE_MODE" = "inherit" ]; then
   if [ -n "${TMUX:-}" ]; then
     TMUX_NAMESPACE="$(tmux display-message -p '#S' 2>/dev/null || true)"
@@ -55,7 +65,7 @@ if [ -z "$TMUX_NAMESPACE" ] && [ "$NAMESPACE_MODE" = "inherit" ]; then
   if [ -z "$TMUX_NAMESPACE" ] && [ -n "${BEADS_MANAGER_TARGET:-}" ]; then
     TMUX_NAMESPACE="${BEADS_MANAGER_TARGET%%:*}"
   fi
-  if [ -z "$TMUX_NAMESPACE" ]; then
+  if [ -z "$TMUX_NAMESPACE" ] && [ "$INFER_NAMESPACE" = "true" ]; then
     CLIENT_SESSIONS="$(tmux list-clients -F '#{session_name}' 2>/dev/null | sort -u | awk 'NF')"
     CLIENT_SESSION_COUNT="$(printf '%s\n' "$CLIENT_SESSIONS" | awk 'NF' | wc -l | tr -d ' ')"
     if [ "$CLIENT_SESSION_COUNT" = "1" ]; then
@@ -139,24 +149,42 @@ fi
 # Propagate approval timeout through tmux to the hook environment
 APPROVAL_TIMEOUT="${CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT:-30}"
 
-# Launch worker in detached tmux via interactive login shell (prefer zsh, fall
-# back to bash) so aliases (e.g. `clauded`) are available.
-# Keep --dangerously-skip-permissions to avoid interactive stalls.
-LAUNCH_CMD="$CLAUDE_LAUNCH_CMD --session-id $(printf '%q' "$SESSION_ID") --plugin-dir $(printf '%q' "$PLUGIN_DIR") --dangerously-skip-permissions"
-for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
-  LAUNCH_CMD+=" $(printf '%q' "$arg")"
-done
-
-LAUNCH_SHELL="zsh"
-if ! command -v zsh >/dev/null 2>&1; then
-  LAUNCH_SHELL="bash"
+# Resolve launch binary without shell evaluation.
+if [[ "$CLAUDE_LAUNCH_BIN" == *[[:space:]]* ]]; then
+  echo "Error: CLAUDE_SESSION_DRIVER_LAUNCH_CMD must be an executable name or path, not a shell command" >&2
+  rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
+  exit 1
 fi
+
+if [[ "$CLAUDE_LAUNCH_BIN" == */* ]]; then
+  if [ ! -x "$CLAUDE_LAUNCH_BIN" ]; then
+    echo "Error: launch command '$CLAUDE_LAUNCH_BIN' is not executable" >&2
+    rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
+    exit 1
+  fi
+else
+  if ! CLAUDE_LAUNCH_BIN="$(command -v "$CLAUDE_LAUNCH_BIN" 2>/dev/null)"; then
+    echo "Error: launch command '${CLAUDE_SESSION_DRIVER_LAUNCH_CMD:-claude}' was not found in PATH" >&2
+    rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
+    exit 1
+  fi
+fi
+
+LAUNCH_ARGS=(
+  "$CLAUDE_LAUNCH_BIN"
+  --session-id "$SESSION_ID"
+  --plugin-dir "$PLUGIN_DIR"
+  --dangerously-skip-permissions
+)
+for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
+  LAUNCH_ARGS+=("$arg")
+done
 
 if [ "$TMUX_SCOPE" = "session" ]; then
   if ! tmux new-session -d -s "$TMUX_NAME" -c "$WORKING_DIR" \
     -e "CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=$APPROVAL_TIMEOUT" \
     -e "CLAUDECODE=" \
-    "$LAUNCH_SHELL" -lic "$LAUNCH_CMD"; then
+    "${LAUNCH_ARGS[@]}"; then
     rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
     exit 1
   fi
@@ -164,7 +192,7 @@ else
   if ! tmux new-window -d -t "$TMUX_NAMESPACE" -n "$WINDOW_NAME" -c "$WORKING_DIR" \
     -e "CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=$APPROVAL_TIMEOUT" \
     -e "CLAUDECODE=" \
-    "$LAUNCH_SHELL" -lic "$LAUNCH_CMD"; then
+    "${LAUNCH_ARGS[@]}"; then
     rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
     exit 1
   fi

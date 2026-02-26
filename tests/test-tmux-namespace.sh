@@ -322,6 +322,17 @@ else
   pass "send-prompt rejects unknown session_id in duplicate-name mode"
 fi
 
+# --- Test 8c: duplicate requested name without session_id requires disambiguation ---
+run_test
+DUPLICATE_ERR_FILE="$TMP_DIR/duplicate-no-session.err"
+if bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$REQUESTED_NAME_DUP" "duplicate namespace prompt no session id" >/dev/null 2>"$DUPLICATE_ERR_FILE"; then
+  fail "send-prompt should fail for duplicate names without session_id"
+elif grep -q "workers match requested name '$REQUESTED_NAME_DUP'" "$DUPLICATE_ERR_FILE"; then
+  pass "send-prompt reports disambiguation guidance for duplicate names"
+else
+  fail "send-prompt duplicate-name error did not include disambiguation guidance"
+fi
+
 # --- Test 9: stop-worker cleanup for duplicate session A ---
 run_test
 if [ -n "$SESSION_ID_DUP_A" ] && bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$REQUESTED_NAME_DUP" "$SESSION_ID_DUP_A" >/dev/null 2>&1; then
