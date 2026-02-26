@@ -12,6 +12,12 @@ Each worker session loads hooks that write lifecycle events to a JSONL file: ses
 
 The controller orchestrates workers through shell scripts that manage tmux sessions, poll events, read conversation logs, and clean up.
 
+When `launch-worker.sh` runs inside tmux, it namespaces worker session names with the current session by default (for example, `fresh-worker-1`). This keeps worker sessions grouped with the coordinator context. Set `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_MODE=off` to disable, `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE` to override the namespace root, and `CLAUDE_SESSION_DRIVER_TMUX_NAMESPACE_DELIM` to change the separator. Outside tmux, single-session namespace inference is disabled by default; enable it explicitly with `CLAUDE_SESSION_DRIVER_INFER_NAMESPACE=true` if you want that behavior. To launch workers via a different command, set `CLAUDE_SESSION_DRIVER_LAUNCH_CMD` to an executable name or path.
+
+Set `CLAUDE_SESSION_DRIVER_TMUX_SCOPE=window` to launch workers as windows in the parent tmux session (window-level orchestration). The default scope is `session`.
+
+`launch-worker.sh` returns both the requested tmux name and resolved `tmux_name` (plus `tmux_scope`); use the resolved `tmux_name` for follow-up commands. `send-prompt.sh` also accepts an optional `session_id` argument for deterministic targeting when requested names collide across namespaces.
+
 ## Installation
 
 ```bash
@@ -40,9 +46,9 @@ Install the plugin and ask Claude to manage a project. The `driving-claude-code-
 
 | Script | Purpose |
 |--------|---------|
-| `launch-worker.sh` | Start a worker session in tmux |
+| `launch-worker.sh` | Start a worker in tmux (session or window scope) |
 | `converse.sh` | Send a prompt, wait, return the response |
-| `send-prompt.sh` | Send a prompt without waiting |
+| `send-prompt.sh` | Send a prompt without waiting (`<tmux-name> <prompt> [session-id]`) |
 | `wait-for-event.sh` | Block until a lifecycle event appears |
 | `read-events.sh` | Read and filter the event stream |
 | `read-turn.sh` | Format the last turn as markdown |

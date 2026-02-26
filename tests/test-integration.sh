@@ -15,6 +15,7 @@ FAILURES=0
 TESTS=0
 SESSION_ID=""
 TMUX_NAME="integration-test-$$"
+WORKER_TMUX_NAME=""
 
 DRY_RUN=false
 if [ "${1:-}" = "--dry-run" ]; then
@@ -35,11 +36,12 @@ run_test() {
 }
 
 cleanup() {
+  TARGET_TMUX="${WORKER_TMUX_NAME:-$TMUX_NAME}"
   if [ -n "$SESSION_ID" ]; then
-    bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>/dev/null || true
+    bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$TARGET_TMUX" "$SESSION_ID" 2>/dev/null || true
   fi
   # Belt and suspenders
-  tmux kill-session -t "$TMUX_NAME" 2>/dev/null || true
+  tmux kill-session -t "$TARGET_TMUX" 2>/dev/null || true
   if [ -n "$SESSION_ID" ]; then
     rm -f "/tmp/claude-workers/${SESSION_ID}.events.jsonl"
     rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
@@ -112,10 +114,11 @@ echo "Test 1: Launch worker..."
 # Short approval timeout so hook-gated tool calls don't block the test
 RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=2 bash "$PLUGIN_DIR/scripts/launch-worker.sh" "$TMUX_NAME" /tmp 2>&1)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
+WORKER_TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 EVENTS_FILE=$(echo "$RESULT" | jq -r '.events_file')
 
-if [ -n "$SESSION_ID" ] && [ -f "$EVENTS_FILE" ]; then
-  pass "Worker launched (session: $SESSION_ID)"
+if [ -n "$SESSION_ID" ] && [ -n "$WORKER_TMUX_NAME" ] && [ -f "$EVENTS_FILE" ]; then
+  pass "Worker launched (session: $SESSION_ID, tmux: $WORKER_TMUX_NAME)"
 else
   fail "Worker failed to launch: $RESULT"
   echo "Results: 0/$TESTS passed"
@@ -136,10 +139,13 @@ run_test
 META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
 if [ -f "$META_FILE" ]; then
   META_TMUX=$(jq -r '.tmux_name' "$META_FILE")
-  if [ "$META_TMUX" = "$TMUX_NAME" ]; then
+  META_REQUESTED_TMUX=$(jq -r '.requested_tmux_name // empty' "$META_FILE")
+  if [ "$META_TMUX" = "$WORKER_TMUX_NAME" ] && [ "$META_REQUESTED_TMUX" = "$TMUX_NAME" ]; then
+    pass "Meta file records requested and resolved tmux names"
+  elif [ "$META_TMUX" = "$TMUX_NAME" ]; then
     pass "Meta file correct (tmux_name=$META_TMUX)"
   else
-    fail "Meta file wrong tmux_name: $META_TMUX"
+    fail "Meta file wrong tmux_name: $META_TMUX (requested=$META_REQUESTED_TMUX)"
   fi
 else
   fail "Meta file not found"
@@ -147,17 +153,17 @@ fi
 
 # --- Test 4: Verify tmux session exists ---
 run_test
-if tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
-  pass "tmux session '$TMUX_NAME' exists"
+if tmux has-session -t "$WORKER_TMUX_NAME" 2>/dev/null; then
+  pass "tmux session '$WORKER_TMUX_NAME' exists"
 else
-  fail "tmux session '$TMUX_NAME' not found"
+  fail "tmux session '$WORKER_TMUX_NAME' not found"
 fi
 
 # --- Test 5: Send prompt that triggers tool use, wait for stop ---
 run_test
 echo "Test 5: Sending prompt (file write)..."
 TEST_FILE="/tmp/integration-test-$$.txt"
-bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$TMUX_NAME" "Write the word 'hello' to $TEST_FILE using the Write tool. Do not read it first."
+bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$WORKER_TMUX_NAME" "Write the word 'hello' to $TEST_FILE using the Write tool. Do not read it first."
 STOP_EVENT=$(bash "$PLUGIN_DIR/scripts/wait-for-event.sh" "$SESSION_ID" stop 120 2>&1)
 STOP_EXIT=$?
 
@@ -211,12 +217,12 @@ fi
 # --- Test 10: Stop worker and verify cleanup ---
 run_test
 echo "Test 10: Stopping worker..."
-bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>&1
+bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$WORKER_TMUX_NAME" "$SESSION_ID" 2>&1
 # Clear SESSION_ID so cleanup trap doesn't double-stop
 STOPPED_SESSION_ID="$SESSION_ID"
 SESSION_ID=""
 
-if ! tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
+if ! tmux has-session -t "$WORKER_TMUX_NAME" 2>/dev/null; then
   pass "tmux session cleaned up"
 else
   fail "tmux session still exists after stop"

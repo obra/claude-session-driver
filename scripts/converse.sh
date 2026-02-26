@@ -63,7 +63,7 @@ if [ -f "$EVENT_FILE" ]; then
 fi
 
 # Send the prompt
-bash "$SCRIPT_DIR/send-prompt.sh" "$TMUX_NAME" "$PROMPT_TEXT"
+bash "$SCRIPT_DIR/send-prompt.sh" "$TMUX_NAME" "$PROMPT_TEXT" "$SESSION_ID"
 
 # Wait for the worker to finish
 if ! bash "$SCRIPT_DIR/wait-for-event.sh" "$SESSION_ID" stop "$TIMEOUT" --after-line "$AFTER_LINE" > /dev/null; then
