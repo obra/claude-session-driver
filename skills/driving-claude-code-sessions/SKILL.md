@@ -280,10 +280,11 @@ Output is formatted as markdown: thinking in blockquotes, tool calls as code blo
 
 ### Worker Crashes or tmux Dies
 
-If the tmux session disappears, `send-prompt.sh` will fail with "tmux session does not exist." Check before sending:
+If the tmux target disappears, `send-prompt.sh` will fail with "tmux target does not exist." Check before sending:
 ```bash
-if ! tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
-  echo "Worker is gone -- need to relaunch"
+TMUX_TARGET="$TMUX_NAME"
+if ! tmux has-session -t "$TMUX_TARGET" 2>/dev/null; then
+  echo "Worker target is gone -- need to relaunch"
 fi
 ```
 

@@ -152,15 +152,21 @@ if ! command -v zsh >/dev/null 2>&1; then
 fi
 
 if [ "$TMUX_SCOPE" = "session" ]; then
-  tmux new-session -d -s "$TMUX_NAME" -c "$WORKING_DIR" \
+  if ! tmux new-session -d -s "$TMUX_NAME" -c "$WORKING_DIR" \
     -e "CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=$APPROVAL_TIMEOUT" \
     -e "CLAUDECODE=" \
-    "$LAUNCH_SHELL" -lic "$LAUNCH_CMD"
+    "$LAUNCH_SHELL" -lic "$LAUNCH_CMD"; then
+    rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
+    exit 1
+  fi
 else
-  tmux new-window -d -t "$TMUX_NAMESPACE" -n "$WINDOW_NAME" -c "$WORKING_DIR" \
+  if ! tmux new-window -d -t "$TMUX_NAMESPACE" -n "$WINDOW_NAME" -c "$WORKING_DIR" \
     -e "CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=$APPROVAL_TIMEOUT" \
     -e "CLAUDECODE=" \
-    "$LAUNCH_SHELL" -lic "$LAUNCH_CMD"
+    "$LAUNCH_SHELL" -lic "$LAUNCH_CMD"; then
+    rm -f "/tmp/claude-workers/${SESSION_ID}.meta"
+    exit 1
+  fi
 fi
 
 # Accept the workspace trust dialog (default selection is "Yes, I trust this folder")

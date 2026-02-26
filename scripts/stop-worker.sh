@@ -10,6 +10,9 @@ TMUX_NAME_INPUT="${1:?Usage: stop-worker.sh <tmux-name> <session-id>}"
 SESSION_ID="${2:?Usage: stop-worker.sh <tmux-name> <session-id>}"
 TMUX_NAME="$TMUX_NAME_INPUT"
 TMUX_SCOPE="session"
+if [[ "$TMUX_NAME" == *:* ]]; then
+  TMUX_SCOPE="window"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
