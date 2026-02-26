@@ -39,9 +39,11 @@ count_text_messages() {
     echo 0
     return
   fi
-  grep '"type":"assistant"' "$LOG_FILE" \
-    | jq -s '[.[] | select(.message.content | any(.type == "text"))] | length' 2>/dev/null \
-    || echo 0
+  local result
+  result=$(grep '"type":"assistant"' "$LOG_FILE" \
+    | jq -s '[.[] | select(.message.content | any(.type == "text"))] | length' 2>/dev/null) \
+    || result=0
+  echo "$result"
 }
 
 # Helper: extract the complete text from the last assistant message that has

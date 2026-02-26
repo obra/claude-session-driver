@@ -15,7 +15,13 @@ The controller orchestrates workers through shell scripts that manage tmux sessi
 ## Installation
 
 ```bash
-claude /install claude-session-driver@superpowers-marketplace
+claude plugin install claude-session-driver@superpowers-marketplace
+```
+
+If your marketplace cache predates this plugin, update it first:
+
+```bash
+claude plugin marketplace update superpowers-marketplace
 ```
 
 Requires **tmux**, **jq**, and the **claude** CLI.
