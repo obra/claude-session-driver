@@ -7,7 +7,12 @@ set -euo pipefail
 #
 # Only activates for worker sessions launched by the session driver.
 
-INPUT=$(cat)
+# Claude sometimes invokes the hook without piping event JSON. Read one JSON
+# line and exit quietly if stdin never produces data instead of blocking
+# forever behind a hanging cat process.
+if ! IFS= read -r -t "${CLAUDE_SESSION_DRIVER_STDIN_TIMEOUT:-1}" INPUT; then
+  exit 0
+fi
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
 

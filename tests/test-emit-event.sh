@@ -38,6 +38,21 @@ make_worker() {
   echo '{"tmux_name":"test","session_id":"'"$sid"'"}' > "$EVENT_DIR/${sid}.meta"
 }
 
+cleanup_blocking_stdin_test() {
+  if [ -n "${EMIT_PID:-}" ] && kill -0 "$EMIT_PID" 2>/dev/null; then
+    kill "$EMIT_PID" 2>/dev/null || true
+    wait "$EMIT_PID" 2>/dev/null || true
+  fi
+  if [ -n "${WRITER_PID:-}" ] && kill -0 "$WRITER_PID" 2>/dev/null; then
+    kill "$WRITER_PID" 2>/dev/null || true
+    wait "$WRITER_PID" 2>/dev/null || true
+  fi
+  if [ -n "${FIFO_PATH:-}" ] && [ -p "$FIFO_PATH" ]; then
+    rm -f "$FIFO_PATH"
+  fi
+  unset EMIT_PID WRITER_PID FIFO_PATH
+}
+
 # --- Test: Non-worker sessions are silently skipped ---
 echo "Test: Non-worker sessions are silently skipped"
 setup
@@ -53,6 +68,36 @@ if [ ! -f "$EVENT_FILE" ]; then
 else
   fail "non-worker skip" "event file should not exist"
 fi
+
+# --- Test: Missing stdin does not hang forever ---
+echo "Test: Missing stdin exits quickly without hanging"
+setup
+SESSION_ID="test-session-no-stdin"
+make_worker "$SESSION_ID"
+FIFO_PATH=$(mktemp -u "$EVENT_DIR/test-fifo.XXXXXX")
+mkfifo "$FIFO_PATH"
+
+# Keep the pipe open without writing any data. This reproduces the hanging
+# stdin case that previously left cat processes around forever.
+(
+  exec 3>"$FIFO_PATH"
+  sleep 5
+) &
+WRITER_PID=$!
+
+bash "$EMIT_EVENT" < "$FIFO_PATH" > /dev/null &
+EMIT_PID=$!
+
+sleep 2
+
+if kill -0 "$EMIT_PID" 2>/dev/null; then
+  fail "missing stdin timeout" "emit-event.sh should have exited instead of hanging on stdin"
+else
+  wait "$EMIT_PID" 2>/dev/null || true
+  pass "emit-event.sh exits when stdin stays open without data"
+fi
+
+cleanup_blocking_stdin_test
 
 # --- Test: SessionStart creates file with correct JSONL ---
 echo "Test: SessionStart creates file with correct JSONL"
