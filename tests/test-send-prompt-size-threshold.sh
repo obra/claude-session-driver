@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # test-send-prompt-size-threshold.sh — verify send-prompt.sh's file-pointer
 # fallback for prompts >LARGE_PROMPT_THRESHOLD (50 KiB).
 #
