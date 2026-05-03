@@ -73,13 +73,13 @@ rm -f "$PENDING_FILE" "$DECISION_FILE"
 # Map decision to hook output
 case "$DECISION" in
   allow)
-    echo '{"hookSpecificOutput":{"permissionDecision":"allow"}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
     ;;
   deny)
-    echo '{"hookSpecificOutput":{"permissionDecision":"deny"}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}'
     ;;
   *)
     # Unknown decision, default to allow
-    echo '{"hookSpecificOutput":{"permissionDecision":"allow"}}'
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
     ;;
 esac
