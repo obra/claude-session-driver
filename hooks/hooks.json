@@ -4,7 +4,7 @@
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/approve-tool.sh",
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" approve-tool",
         "timeout": 120
       }]
     }],
@@ -12,28 +12,28 @@
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/emit-event.sh"
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" emit-event"
       }]
     }],
     "Stop": [{
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/emit-event.sh"
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" emit-event"
       }]
     }],
     "UserPromptSubmit": [{
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/emit-event.sh"
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" emit-event"
       }]
     }],
     "SessionEnd": [{
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/emit-event.sh"
+        "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" emit-event"
       }]
     }]
   }

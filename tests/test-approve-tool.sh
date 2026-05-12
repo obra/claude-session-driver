@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Test suite for approve-tool.sh PreToolUse hook
+# Test suite for the approve-tool PreToolUse hook
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APPROVE_TOOL="$SCRIPT_DIR/../hooks/approve-tool.sh"
+APPROVE_TOOL="$SCRIPT_DIR/../hooks/approve-tool"
 EVENT_DIR="/tmp/claude-workers"
 
 PASS_COUNT=0

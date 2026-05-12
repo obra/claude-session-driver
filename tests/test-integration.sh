@@ -87,7 +87,10 @@ if [ "$DRY_RUN" = true ]; then
   pass "All scripts are executable"
 
   run_test
-  if [ -f "$PLUGIN_DIR/hooks/hooks.json" ] && [ -x "$PLUGIN_DIR/hooks/emit-event.sh" ]; then
+  if [ -f "$PLUGIN_DIR/hooks/hooks.json" ] \
+       && [ -x "$PLUGIN_DIR/hooks/run-hook.cmd" ] \
+       && [ -x "$PLUGIN_DIR/hooks/emit-event" ] \
+       && [ -x "$PLUGIN_DIR/hooks/approve-tool" ]; then
     pass "Hooks configured"
   else
     fail "Hooks missing"

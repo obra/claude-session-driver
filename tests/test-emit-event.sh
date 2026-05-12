@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Test suite for emit-event.sh hook script
+# Test suite for the emit-event hook script
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-EMIT_EVENT="$SCRIPT_DIR/../hooks/emit-event.sh"
+EMIT_EVENT="$SCRIPT_DIR/../hooks/emit-event"
 EVENT_DIR="/tmp/claude-workers"
 
 PASS_COUNT=0
