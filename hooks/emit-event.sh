@@ -7,7 +7,22 @@ set -euo pipefail
 #
 # Only activates for worker sessions launched by the session driver.
 
-INPUT=$(cat)
+# Read all of stdin with a bounded 5s timeout. Without the timeout, if the
+# caller fails to close stdin, the read would hang forever, leaking bash
+# processes on every hook event and eventually exhausting the user's process
+# limit (issue #9). `read -d ''` reads until NUL; since the JSON payload has
+# none, this captures everything up to EOF or timeout in one call, including
+# payloads with no trailing newline (which the previous line-by-line loop
+# silently dropped). `|| true` keeps `set -e` happy when read returns nonzero.
+INPUT=""
+IFS= read -t 5 -d '' -r INPUT || true
+
+# Empty or unparseable input — caller is misbehaving. Exit silently rather
+# than letting jq below fail under set -e and produce a non-zero hook exit
+# (which on the Stop hook can break session shutdown — see issue #15).
+if [ -z "$INPUT" ] || ! printf '%s' "$INPUT" | jq -e . >/dev/null 2>&1; then
+  exit 0
+fi
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
 
