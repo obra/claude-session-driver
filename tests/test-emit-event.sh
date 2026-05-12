@@ -251,6 +251,87 @@ check_mapping "Stop"             "stop"
 check_mapping "UserPromptSubmit" "user_prompt_submit"
 check_mapping "SessionEnd"       "session_end"
 
+# --- Test: Hook handles JSON without trailing newline (regression for #9 fix) ---
+echo "Test: Hook accepts JSON payload without trailing newline"
+setup
+SESSION_ID="test-no-newline"
+make_worker "$SESSION_ID"
+EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
+
+# printf without \n — the line-by-line read loop used to drop this entirely.
+STDOUT=$(printf '{"session_id":"test-no-newline","hook_event_name":"Stop"}' \
+  | bash "$EMIT_EVENT")
+
+if [ ! -f "$EVENT_FILE" ]; then
+  fail "no-newline payload" "event file was not created from un-terminated JSON"
+else
+  EVENT_VAL=$(head -1 "$EVENT_FILE" | jq -r '.event')
+  if [ "$EVENT_VAL" = "stop" ]; then
+    pass "no-newline Stop payload still records event"
+  else
+    fail "no-newline event field" "expected 'stop', got '$EVENT_VAL'"
+  fi
+fi
+
+DECISION=$(echo "$STDOUT" | jq -r '.decision' 2>/dev/null || echo "")
+if [ "$DECISION" = "approve" ]; then
+  pass "no-newline Stop payload still emits approve decision"
+else
+  fail "no-newline decision" "expected 'approve', got '$DECISION' (PreToolUse hook would silently allow every tool call)"
+fi
+
+# --- Test: emit-event handles malformed JSON without aborting (roborev 405) ---
+echo "Test: emit-event exits 0 silently on malformed JSON"
+setup
+set +e
+printf '{"truncated":' | bash "$EMIT_EVENT" >/dev/null 2>&1
+EXIT_CODE=$?
+set -e
+if [ "$EXIT_CODE" -eq 0 ]; then
+  pass "malformed JSON produces clean exit 0 (no Stop hook block)"
+else
+  fail "malformed JSON exit code" "expected 0, got $EXIT_CODE (non-zero on Stop hook breaks session shutdown)"
+fi
+
+# --- Test: Hook exits within bounded time when stdin never closes (issue #9) ---
+echo "Test: Hook does not hang forever on a stalled stdin"
+setup
+FIFO="/tmp/emit-event-stall-$$.fifo"
+rm -f "$FIFO"
+mkfifo "$FIFO"
+# Keep the fifo's write end open in the background so the reader never sees EOF.
+sleep 30 > "$FIFO" &
+WRITER_PID=$!
+
+START=$(date +%s)
+bash "$EMIT_EVENT" < "$FIFO" > /dev/null 2>&1 &
+HOOK_PID=$!
+
+# Hook should exit within the read timeout (5s) plus a small fudge.
+DEADLINE=$((START + 8))
+while kill -0 $HOOK_PID 2>/dev/null; do
+  NOW=$(date +%s)
+  if [ "$NOW" -ge "$DEADLINE" ]; then
+    kill $HOOK_PID 2>/dev/null || true
+    fail "hook timeout" "hook still alive after 8s (would leak processes in production)"
+    break
+  fi
+  sleep 0.2
+done
+
+wait $HOOK_PID 2>/dev/null || true
+END=$(date +%s)
+ELAPSED=$((END - START))
+
+# Clean up the writer
+kill $WRITER_PID 2>/dev/null || true
+wait $WRITER_PID 2>/dev/null || true
+rm -f "$FIFO"
+
+if [ "$ELAPSED" -lt 8 ]; then
+  pass "stalled stdin hook exited in ${ELAPSED}s (<8s)"
+fi
+
 # --- Summary ---
 echo ""
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

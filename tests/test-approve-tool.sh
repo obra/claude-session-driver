@@ -188,6 +188,83 @@ else
   fail "event file" "not created"
 fi
 
+# --- Test: PreToolUse emits decision JSON for payloads without trailing newline (regression for #9 fix) ---
+echo "Test: PreToolUse returns a permissionDecision when JSON has no trailing newline"
+setup
+SESSION_ID="test-approve-no-newline"
+make_worker "$SESSION_ID"
+
+# printf without \n — the old line-by-line read loop dropped this entirely,
+# causing the hook to exit 0 with no permissionDecision, which combined with
+# --dangerously-skip-permissions silently allowed every tool call.
+STDOUT=$(printf '{"session_id":"test-approve-no-newline","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"}}' \
+  | CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=1 bash "$APPROVE_TOOL" 2>/dev/null || true)
+
+DECISION=$(echo "$STDOUT" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null || echo "")
+if [ -n "$DECISION" ] && [ "$DECISION" != "null" ]; then
+  pass "PreToolUse emits permissionDecision='$DECISION' for un-terminated JSON"
+else
+  fail "no-newline PreToolUse" "no permissionDecision in output (would silently allow every tool call). stdout='$STDOUT'"
+fi
+
+# --- Test: PreToolUse fails closed on malformed JSON (roborev 405) ---
+echo "Test: PreToolUse emits deny when stdin contains unparseable JSON"
+setup
+STDOUT=$(printf '{"truncated":' \
+  | CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=1 bash "$APPROVE_TOOL" 2>/dev/null || true)
+DECISION=$(echo "$STDOUT" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null || echo "")
+if [ "$DECISION" = "deny" ]; then
+  pass "malformed JSON produces deny decision"
+else
+  fail "malformed JSON decision" "expected 'deny', got '$DECISION' (stdout: $STDOUT)"
+fi
+
+# --- Test: Hook fails closed (deny) when stdin times out (issue #9 + roborev 400) ---
+echo "Test: Hook emits deny decision when stdin never closes"
+setup
+FIFO="/tmp/approve-tool-stall-$$.fifo"
+HOOK_STDOUT="/tmp/approve-tool-stall-stdout-$$"
+rm -f "$FIFO" "$HOOK_STDOUT"
+mkfifo "$FIFO"
+sleep 30 > "$FIFO" &
+WRITER_PID=$!
+
+START=$(date +%s)
+bash "$APPROVE_TOOL" < "$FIFO" > "$HOOK_STDOUT" 2>/dev/null &
+HOOK_PID=$!
+
+DEADLINE=$((START + 8))
+while kill -0 $HOOK_PID 2>/dev/null; do
+  NOW=$(date +%s)
+  if [ "$NOW" -ge "$DEADLINE" ]; then
+    kill $HOOK_PID 2>/dev/null || true
+    fail "hook timeout" "hook still alive after 8s (would leak processes in production)"
+    break
+  fi
+  sleep 0.2
+done
+
+wait $HOOK_PID 2>/dev/null || true
+END=$(date +%s)
+ELAPSED=$((END - START))
+
+kill $WRITER_PID 2>/dev/null || true
+wait $WRITER_PID 2>/dev/null || true
+rm -f "$FIFO"
+
+if [ "$ELAPSED" -lt 8 ]; then
+  pass "stalled stdin hook exited in ${ELAPSED}s (<8s)"
+fi
+
+# Now verify it fails closed instead of silently allowing.
+DECISION=$(jq -r '.hookSpecificOutput.permissionDecision' "$HOOK_STDOUT" 2>/dev/null || echo "")
+if [ "$DECISION" = "deny" ]; then
+  pass "stalled stdin produces deny decision (fail-closed under --dangerously-skip-permissions)"
+else
+  fail "stalled stdin decision" "expected 'deny', got '$DECISION' (stdout: $(cat "$HOOK_STDOUT"))"
+fi
+rm -f "$HOOK_STDOUT"
+
 # --- Summary ---
 echo ""
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

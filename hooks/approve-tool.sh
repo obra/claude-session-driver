@@ -21,7 +21,27 @@ set -euo pipefail
 
 APPROVAL_TIMEOUT="${CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT:-30}"
 
-INPUT=$(cat)
+# Read all of stdin with a bounded 5s timeout. Without the timeout, if the
+# caller fails to close stdin, the read would hang forever, leaking bash
+# processes on every tool call and eventually exhausting the user's process
+# limit (issue #9). `read -d ''` reads until NUL; since the JSON payload has
+# none, this captures everything up to EOF or timeout in one call, including
+# payloads with no trailing newline (which the previous line-by-line loop
+# silently dropped, causing the PreToolUse hook to return no
+# permissionDecision and inadvertently auto-approve every tool call).
+INPUT=""
+IFS= read -t 5 -d '' -r INPUT || true
+
+# Empty or unparseable input — caller is misbehaving or stdin was truncated.
+# Fail closed: emit an explicit deny so a worker running with
+# --dangerously-skip-permissions doesn't auto-approve the tool call when our
+# gate is missing. The `jq -e . >/dev/null` guard runs the parse in a
+# condition (set -e doesn't fire) so a truncated/partial payload here exits
+# via the deny path rather than aborting silently in the jq below.
+if [ -z "$INPUT" ] || ! printf '%s' "$INPUT" | jq -e . >/dev/null 2>&1; then
+  echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"claude-session-driver PreToolUse hook received no parseable stdin payload"}}'
+  exit 0
+fi
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
 
