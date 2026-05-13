@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.1.0] - 2026-05-13
+## [1.2.0] - 2026-05-13
 
 ### Changed
 - **Scripts directory moved into the skill.** Per the
