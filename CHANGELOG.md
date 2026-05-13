@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.0.2] - 2026-05-13
+
+### Fixed
+- **SUP-239**: send-prompt.sh now wraps prompt text in bracketed-paste
+  markers (\x1B[200~ ... \x1B[201~) and inserts a 100ms gap before Enter,
+  matching the pattern Anthropic's own SDK uses to drive a Claude Code TUI.
+  Long prompts (30+ lines, unicode) no longer intermittently stick in the
+  worker's input box without submitting.
+- **#9**: emit-event and approve-tool hooks no longer hang indefinitely
+  when stdin is never closed. Replaced unbounded `cat` with `read -t 5 -d ''`,
+  exit-0 on empty input. approve-tool additionally emits an explicit deny
+  decision on empty or unparseable stdin so a worker running with
+  --dangerously-skip-permissions can't accidentally auto-approve tool calls
+  when the hook payload is malformed.
+- **#14, #15**: hooks/run-hook.cmd polyglot wrapper for cross-platform
+  invocation. Quotes `${CLAUDE_PLUGIN_ROOT}` to survive Windows paths with
+  spaces and locates `bash.exe` via Git for Windows install paths so hooks
+  run when Claude Code's hook PATH doesn't include bash. Hook scripts
+  (emit-event, approve-tool) renamed to extensionless filenames so Windows
+  auto-detection doesn't double-invoke them.
+- **#11**: launch-worker.sh now works when invoked from inside another
+  Claude session. Blanks the two env vars that break a nested worker
+  (CLAUDE_CODE_SSE_PORT, CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST) via
+  `tmux -e VAR=`. Passes `--settings '{"skipDangerousModePermissionPrompt":true}'`
+  to silence the bypass-permissions warning dialog. Content-aware accept
+  of the workspace-trust dialog only when it actually appears, so other
+  dialogs (onboarding, theme picker) surface in the timeout error with
+  `tmux capture-pane` output instead of getting auto-dismissed. On
+  wait-for-event timeout, dumps the worker pane to stderr so the user can
+  see what's blocking.
+
+### Added
+- One-time consent flow for running workers with
+  --dangerously-skip-permissions. A new `scripts/grant-consent.sh` walks
+  the user through what the plugin does and records acceptance in
+  `~/.claude/.claude-session-driver-consent`. launch-worker.sh refuses to
+  spawn workers until the dotfile exists, pointing the user at
+  grant-consent.sh in the error message. Existing users will need to run
+  `bash scripts/grant-consent.sh` once after updating.
+
 ## [1.0.1] - 2026-02-22
 
 ### Fixed
