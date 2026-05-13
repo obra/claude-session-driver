@@ -4,7 +4,7 @@ set -euo pipefail
 # Test suite for read-events.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-READ_EVENTS="$SCRIPT_DIR/../scripts/read-events.sh"
+READ_EVENTS="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/read-events.sh"
 EVENT_DIR="/tmp/claude-workers"
 
 PASS_COUNT=0

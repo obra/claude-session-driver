@@ -20,10 +20,12 @@ These must be available on the system:
 
 ## Setup
 
-All scripts live at `../../scripts/` relative to this skill's base directory. Set a convenience variable:
+Helper scripts live in this skill's `scripts/` subdirectory. Invoke them with
+paths relative to the skill base directory (Claude Code provides the skill's
+absolute path):
 
 ```bash
-SCRIPTS="<this-skill's-base-directory>/plugin/scripts"
+scripts/launch-worker.sh my-worker /path/to/project
 ```
 
 ## Workflow
@@ -31,7 +33,7 @@ SCRIPTS="<this-skill's-base-directory>/plugin/scripts"
 ### 1. Launch a Worker
 
 ```bash
-RESULT=$("$SCRIPTS/launch-worker.sh" my-worker /path/to/project)
+RESULT=$(scripts/launch-worker.sh my-worker /path/to/project)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 ```
@@ -47,7 +49,7 @@ Permission bypass is automatic. The worker's PreToolUse hook provides controller
 Pass extra `claude` CLI arguments after the working directory:
 ```bash
 # Use a specific model
-RESULT=$("$SCRIPTS/launch-worker.sh" my-worker /path/to/project --model sonnet)
+RESULT=$(scripts/launch-worker.sh my-worker /path/to/project --model sonnet)
 ```
 
 ### 2. Converse (Preferred)
@@ -55,15 +57,15 @@ RESULT=$("$SCRIPTS/launch-worker.sh" my-worker /path/to/project --model sonnet)
 For most interactions, use `converse.sh` — it sends the prompt, waits for the worker to finish, and returns the assistant's response in one call:
 
 ```bash
-RESPONSE=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Refactor the auth module to use JWT tokens" 300)
+RESPONSE=$(scripts/converse.sh my-worker "$SESSION_ID" "Refactor the auth module to use JWT tokens" 300)
 echo "$RESPONSE"
 ```
 
 It handles `--after-line` tracking automatically, so multi-turn conversations just work:
 
 ```bash
-R1=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Write tests for the auth module" 300)
-R2=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
+R1=$(scripts/converse.sh my-worker "$SESSION_ID" "Write tests for the auth module" 300)
+R2=$(scripts/converse.sh my-worker "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
 ```
 
 ### 3. Send a Prompt (Low-Level)
@@ -71,13 +73,13 @@ R2=$("$SCRIPTS/converse.sh" my-worker "$SESSION_ID" "Now add edge case tests for
 For finer control, use the individual scripts. `send-prompt.sh` sends text without waiting:
 
 ```bash
-"$SCRIPTS/send-prompt.sh" my-worker "Refactor the auth module to use JWT tokens"
+scripts/send-prompt.sh my-worker "Refactor the auth module to use JWT tokens"
 ```
 
 ### 4. Wait for the Worker to Finish
 
 ```bash
-"$SCRIPTS/wait-for-event.sh" "$SESSION_ID" stop 300
+scripts/wait-for-event.sh "$SESSION_ID" stop 300
 ```
 
 This blocks until the worker emits a `stop` event (meaning it finished processing and is waiting for input) or the timeout (in seconds) expires. Exit code 0 means the event arrived; exit code 1 means timeout.
@@ -91,16 +93,16 @@ The matching event JSON line is printed to stdout:
 
 ```bash
 # All events
-"$SCRIPTS/read-events.sh" "$SESSION_ID"
+scripts/read-events.sh "$SESSION_ID"
 
 # Last 3 events
-"$SCRIPTS/read-events.sh" "$SESSION_ID" --last 3
+scripts/read-events.sh "$SESSION_ID" --last 3
 
 # Only stop events
-"$SCRIPTS/read-events.sh" "$SESSION_ID" --type stop
+scripts/read-events.sh "$SESSION_ID" --type stop
 
 # Follow in real-time (blocks -- run in background Bash job for monitoring)
-"$SCRIPTS/read-events.sh" "$SESSION_ID" --follow &
+scripts/read-events.sh "$SESSION_ID" --follow &
 MONITOR_PID=$!
 # ... do other work ... then stop monitoring:
 kill $MONITOR_PID 2>/dev/null
@@ -133,7 +135,7 @@ grep '"type":"assistant"' "$LOG_FILE" | tail -1 | jq -r '.message.content[] | se
 ### 7. Stop a Worker
 
 ```bash
-"$SCRIPTS/stop-worker.sh" my-worker "$SESSION_ID"
+scripts/stop-worker.sh my-worker "$SESSION_ID"
 ```
 
 The script:
@@ -175,38 +177,38 @@ All scripts exit 0 on success, non-zero on failure. Error messages go to stderr.
 ### Single Worker: Delegate and Wait
 
 ```bash
-RESULT=$("$SCRIPTS/launch-worker.sh" task-worker ~/myproject)
+RESULT=$(scripts/launch-worker.sh task-worker ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 
-"$SCRIPTS/send-prompt.sh" task-worker "Run the test suite and fix any failures"
-"$SCRIPTS/wait-for-event.sh" "$SESSION_ID" stop 600
+scripts/send-prompt.sh task-worker "Run the test suite and fix any failures"
+scripts/wait-for-event.sh "$SESSION_ID" stop 600
 
 # Read what happened, then clean up
-"$SCRIPTS/read-events.sh" "$SESSION_ID"
-"$SCRIPTS/stop-worker.sh" task-worker "$SESSION_ID"
+scripts/read-events.sh "$SESSION_ID"
+scripts/stop-worker.sh task-worker "$SESSION_ID"
 ```
 
 ### Fan-Out: Multiple Workers in Parallel
 
 ```bash
 # Launch workers for different tasks
-R1=$("$SCRIPTS/launch-worker.sh" worker-api ~/myproject)
+R1=$(scripts/launch-worker.sh worker-api ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
 
-R2=$("$SCRIPTS/launch-worker.sh" worker-ui ~/myproject)
+R2=$(scripts/launch-worker.sh worker-ui ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
 
 # Send each their task
-"$SCRIPTS/send-prompt.sh" worker-api "Add pagination to the /users endpoint"
-"$SCRIPTS/send-prompt.sh" worker-ui "Add a loading spinner to the user list page"
+scripts/send-prompt.sh worker-api "Add pagination to the /users endpoint"
+scripts/send-prompt.sh worker-ui "Add a loading spinner to the user list page"
 
 # Wait for both (sequentially -- first one to finish unblocks its wait)
-"$SCRIPTS/wait-for-event.sh" "$S1" stop 600
-"$SCRIPTS/wait-for-event.sh" "$S2" stop 600
+scripts/wait-for-event.sh "$S1" stop 600
+scripts/wait-for-event.sh "$S2" stop 600
 
 # Clean up
-"$SCRIPTS/stop-worker.sh" worker-api "$S1"
-"$SCRIPTS/stop-worker.sh" worker-ui "$S2"
+scripts/stop-worker.sh worker-api "$S1"
+scripts/stop-worker.sh worker-ui "$S2"
 ```
 
 ### Pipeline: Chained Workers
@@ -215,20 +217,20 @@ Pass one worker's output to the next:
 
 ```bash
 # Worker 1: Generate an API spec
-R1=$("$SCRIPTS/launch-worker.sh" worker-spec ~/myproject)
+R1=$(scripts/launch-worker.sh worker-spec ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
-"$SCRIPTS/send-prompt.sh" worker-spec "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml"
-"$SCRIPTS/wait-for-event.sh" "$S1" stop 300
+scripts/send-prompt.sh worker-spec "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml"
+scripts/wait-for-event.sh "$S1" stop 300
 
 # Worker 2: Implement from the spec that Worker 1 produced
-R2=$("$SCRIPTS/launch-worker.sh" worker-impl ~/myproject)
+R2=$(scripts/launch-worker.sh worker-impl ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
-"$SCRIPTS/send-prompt.sh" worker-impl "Implement the API endpoint defined in /tmp/api-spec.yaml"
-"$SCRIPTS/wait-for-event.sh" "$S2" stop 600
+scripts/send-prompt.sh worker-impl "Implement the API endpoint defined in /tmp/api-spec.yaml"
+scripts/wait-for-event.sh "$S2" stop 600
 
 # Clean up both
-"$SCRIPTS/stop-worker.sh" worker-spec "$S1"
-"$SCRIPTS/stop-worker.sh" worker-impl "$S2"
+scripts/stop-worker.sh worker-spec "$S1"
+scripts/stop-worker.sh worker-impl "$S2"
 ```
 
 The key: workers communicate through files on disk. The controller orchestrates the sequence.
@@ -238,13 +240,13 @@ The key: workers communicate through files on disk. The controller orchestrates 
 `converse.sh` handles `--after-line` tracking automatically, so multi-turn is straightforward:
 
 ```bash
-RESULT=$("$SCRIPTS/launch-worker.sh" supervised ~/myproject)
+RESULT=$(scripts/launch-worker.sh supervised ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 
-R1=$("$SCRIPTS/converse.sh" supervised "$SESSION_ID" "Write tests for the auth module" 300)
-R2=$("$SCRIPTS/converse.sh" supervised "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
+R1=$(scripts/converse.sh supervised "$SESSION_ID" "Write tests for the auth module" 300)
+R2=$(scripts/converse.sh supervised "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
 
-"$SCRIPTS/stop-worker.sh" supervised "$SESSION_ID"
+scripts/stop-worker.sh supervised "$SESSION_ID"
 ```
 
 ### Reviewing Worker Output
@@ -253,10 +255,10 @@ R2=$("$SCRIPTS/converse.sh" supervised "$SESSION_ID" "Now add edge case tests fo
 
 ```bash
 # After a converse.sh call, review what the worker actually did
-"$SCRIPTS/read-turn.sh" "$SESSION_ID"
+scripts/read-turn.sh "$SESSION_ID"
 
 # Show complete tool results (default truncates to 5 lines)
-"$SCRIPTS/read-turn.sh" "$SESSION_ID" --full
+scripts/read-turn.sh "$SESSION_ID" --full
 ```
 
 Output is formatted as markdown: thinking in blockquotes, tool calls as code blocks, results in fenced blocks, and text responses inline.
@@ -286,7 +288,7 @@ The event file at `/tmp/claude-workers/<session-id>.events.jsonl` will still con
 `send-prompt.sh` sends text literally via `tmux send-keys -l`, which handles multi-line text and special characters correctly. Very long prompts (tens of KB) may hit tmux buffer limits. For extremely large inputs, consider writing the instructions to a file and telling the worker to read it:
 ```bash
 echo "Your detailed instructions here..." > /tmp/worker-instructions.txt
-"$SCRIPTS/send-prompt.sh" my-worker "Read /tmp/worker-instructions.txt and follow those instructions"
+scripts/send-prompt.sh my-worker "Read /tmp/worker-instructions.txt and follow those instructions"
 ```
 
 ### Tool Approval
@@ -306,16 +308,16 @@ if [ -f "$PENDING_FILE" ]; then
   cat "$PENDING_FILE"  # Shows tool_name and tool_input
 
   # Approve it
-  "$SCRIPTS/approve-tool.sh" "$SESSION_ID" allow
+  scripts/approve-tool.sh "$SESSION_ID" allow
 
   # Or deny it
-  "$SCRIPTS/approve-tool.sh" "$SESSION_ID" deny
+  scripts/approve-tool.sh "$SESSION_ID" deny
 fi
 ```
 
 The timeout is configurable via the `CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT` environment variable (default: 30 seconds). To change it, pass the env var when launching:
 ```bash
-RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=60 "$SCRIPTS/launch-worker.sh" my-worker ~/project)
+RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=60 scripts/launch-worker.sh my-worker ~/project)
 ```
 
 ## Important Notes

@@ -16,7 +16,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LAUNCH_WORKER="$PLUGIN_DIR/scripts/launch-worker.sh"
+SCRIPTS_DIR="$PLUGIN_DIR/skills/driving-claude-code-sessions/scripts"
+LAUNCH_WORKER="$SCRIPTS_DIR/launch-worker.sh"
 
 STUB_DIR=$(mktemp -d)
 STUB_LOG="$STUB_DIR/claude.env.log"

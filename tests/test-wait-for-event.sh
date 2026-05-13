@@ -4,7 +4,7 @@ set -euo pipefail
 # Test suite for wait-for-event.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WAIT_FOR_EVENT="$SCRIPT_DIR/../scripts/wait-for-event.sh"
+WAIT_FOR_EVENT="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/wait-for-event.sh"
 EVENT_DIR="/tmp/claude-workers"
 
 PASS_COUNT=0

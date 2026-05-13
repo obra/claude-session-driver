@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.0] - 2026-05-13
+
+### Changed
+- **Scripts directory moved into the skill.** Per the [agent-skills spec](https://agentskills.io/specification),
+  bundled scripts belong in `<skill>/scripts/`. Helper scripts have moved from
+  `scripts/` (plugin root) to `skills/driving-claude-code-sessions/scripts/`.
+  The SKILL.md now references them with bare relative paths (e.g.
+  `scripts/launch-worker.sh`) instead of a `$SCRIPTS=` placeholder. **Breaking
+  for anyone scripting against the old `<plugin-root>/scripts/` path**; update
+  references to point at the skill's scripts directory.
+
 ## [1.0.2] - 2026-05-13
 
 ### Fixed

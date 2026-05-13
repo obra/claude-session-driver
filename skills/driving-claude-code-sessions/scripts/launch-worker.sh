@@ -11,9 +11,11 @@ WORKING_DIR="${2:?Usage: launch-worker.sh <tmux-name> <working-dir> [extra claud
 shift 2
 EXTRA_ARGS=("$@")
 
-# Resolve plugin directory (parent of scripts/)
+# Resolve plugin directory. Scripts live at
+# <plugin>/skills/driving-claude-code-sessions/scripts/ per the agent-skills
+# spec (scripts/ inside the skill dir), so the plugin root is three levels up.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PLUGIN_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # Resolve working directory to absolute physical path (resolves symlinks)
 WORKING_DIR="$(cd "$WORKING_DIR" && pwd -P)"

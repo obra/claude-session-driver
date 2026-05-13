@@ -15,7 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SEND_PROMPT="$PLUGIN_DIR/scripts/send-prompt.sh"
+SEND_PROMPT="$PLUGIN_DIR/skills/driving-claude-code-sessions/scripts/send-prompt.sh"
 RECORDER="$SCRIPT_DIR/helpers/timestamp-stdin.py"
 
 TMUX_NAME="send-prompt-test-$$"

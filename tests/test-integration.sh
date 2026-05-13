@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPTS_DIR="$PLUGIN_DIR/skills/driving-claude-code-sessions/scripts"
 FAILURES=0
 TESTS=0
 SESSION_ID=""
@@ -36,7 +37,7 @@ run_test() {
 
 cleanup() {
   if [ -n "$SESSION_ID" ]; then
-    bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>/dev/null || true
+    bash "$SCRIPTS_DIR/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>/dev/null || true
   fi
   # Belt and suspenders
   tmux kill-session -t "$TMUX_NAME" 2>/dev/null || true
@@ -80,7 +81,7 @@ if [ "$DRY_RUN" = true ]; then
 
   run_test
   for script in launch-worker.sh send-prompt.sh wait-for-event.sh read-events.sh stop-worker.sh; do
-    if [ ! -x "$PLUGIN_DIR/scripts/$script" ]; then
+    if [ ! -x "$SCRIPTS_DIR/$script" ]; then
       fail "Script not executable: $script"
     fi
   done
@@ -113,7 +114,7 @@ echo ""
 run_test
 echo "Test 1: Launch worker..."
 # Short approval timeout so hook-gated tool calls don't block the test
-RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=2 bash "$PLUGIN_DIR/scripts/launch-worker.sh" "$TMUX_NAME" /tmp 2>&1)
+RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=2 bash "$SCRIPTS_DIR/launch-worker.sh" "$TMUX_NAME" /tmp 2>&1)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 EVENTS_FILE=$(echo "$RESULT" | jq -r '.events_file')
 
@@ -160,8 +161,8 @@ fi
 run_test
 echo "Test 5: Sending prompt (file write)..."
 TEST_FILE="/tmp/integration-test-$$.txt"
-bash "$PLUGIN_DIR/scripts/send-prompt.sh" "$TMUX_NAME" "Write the word 'hello' to $TEST_FILE using the Write tool. Do not read it first."
-STOP_EVENT=$(bash "$PLUGIN_DIR/scripts/wait-for-event.sh" "$SESSION_ID" stop 120 2>&1)
+bash "$SCRIPTS_DIR/send-prompt.sh" "$TMUX_NAME" "Write the word 'hello' to $TEST_FILE using the Write tool. Do not read it first."
+STOP_EVENT=$(bash "$SCRIPTS_DIR/wait-for-event.sh" "$SESSION_ID" stop 120 2>&1)
 STOP_EXIT=$?
 
 if [ $STOP_EXIT -eq 0 ]; then
@@ -204,7 +205,7 @@ fi
 
 # --- Test 9: read-events.sh works on live data ---
 run_test
-STOP_COUNT=$(bash "$PLUGIN_DIR/scripts/read-events.sh" "$SESSION_ID" --type stop | wc -l | tr -d ' ')
+STOP_COUNT=$(bash "$SCRIPTS_DIR/read-events.sh" "$SESSION_ID" --type stop | wc -l | tr -d ' ')
 if [ "$STOP_COUNT" -ge 1 ]; then
   pass "read-events.sh --type stop found $STOP_COUNT stop event(s)"
 else
@@ -214,7 +215,7 @@ fi
 # --- Test 10: Stop worker and verify cleanup ---
 run_test
 echo "Test 10: Stopping worker..."
-bash "$PLUGIN_DIR/scripts/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>&1
+bash "$SCRIPTS_DIR/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>&1
 # Clear SESSION_ID so cleanup trap doesn't double-stop
 STOPPED_SESSION_ID="$SESSION_ID"
 SESSION_ID=""
