@@ -5,17 +5,23 @@ set -euo pipefail
 # A "turn" is everything after the last user prompt: thinking, tool calls,
 # tool results, and text responses.
 #
-# Usage: read-turn.sh <session-id> [--full]
+# Usage: read-turn.sh <session-id-or-tmux-name> [--full]
 #
+# The first arg may be either a session_id (UUID) or a tmux_name.
 # By default, tool results are truncated to 5 lines. Use --full to show
 # complete tool results.
 
-SESSION_ID="${1:?Usage: read-turn.sh <session-id> [--full]}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_lib.sh
+source "$SCRIPT_DIR/_lib.sh"
+
+ID_OR_NAME="${1:?Usage: read-turn.sh <session-id-or-tmux-name> [--full]}"
 FULL_OUTPUT=false
 if [ "${2:-}" = "--full" ]; then
   FULL_OUTPUT=true
 fi
 
+SESSION_ID=$(resolve_session "$ID_OR_NAME")
 META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
 
 # Resolve session log path

@@ -4,17 +4,16 @@ set -euo pipefail
 # Sends a prompt to a worker, waits for it to finish, and prints the worker's
 # response. Combines send-prompt + wait-for-event + read into a single call.
 #
-# Usage: converse.sh [--with-turn] <session-id> <prompt-text> [timeout=120]
-#        converse.sh [--with-turn] <tmux-name> <session-id> <prompt-text> [timeout=120]
+# Usage: converse.sh [--with-turn] <session-id-or-tmux-name> <prompt-text> [timeout=120]
 #
 # By default prints only the final assistant text on stdout. With --with-turn,
 # prints the full turn as markdown (via read-turn.sh) — useful when the worker
 # is doing tool work and the bare text response strips out the interesting
 # part.
-#
-# Accepts either the session-id alone (canonical) or the legacy
-# <tmux-name> <session-id> pair. With just <session-id>, the tmux name is
-# resolved from /tmp/claude-workers/<session-id>.meta.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_lib.sh
+source "$SCRIPT_DIR/_lib.sh"
 
 WITH_TURN=0
 if [ "${1:-}" = "--with-turn" ]; then
@@ -22,26 +21,13 @@ if [ "${1:-}" = "--with-turn" ]; then
   shift
 fi
 
-UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-if [[ "${1:-}" =~ $UUID_RE ]]; then
-  SESSION_ID="$1"
-  PROMPT_TEXT="${2:?Usage: converse.sh [--with-turn] <session-id> <prompt-text> [timeout=120]}"
-  TIMEOUT="${3:-120}"
-  META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
-  if [ ! -f "$META_FILE" ]; then
-    echo "Error: no meta file for session $SESSION_ID at $META_FILE" >&2
-    exit 1
-  fi
-  TMUX_NAME=$(jq -r '.tmux_name' "$META_FILE")
-else
-  TMUX_NAME="${1:?Usage: converse.sh [--with-turn] <session-id> <prompt-text> [timeout=120]}"
-  SESSION_ID="${2:?Usage: converse.sh [--with-turn] <tmux-name> <session-id> <prompt-text> [timeout=120]}"
-  PROMPT_TEXT="${3:?Usage: converse.sh [--with-turn] <tmux-name> <session-id> <prompt-text> [timeout=120]}"
-  TIMEOUT="${4:-120}"
-  META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
-fi
+ID_OR_NAME="${1:?Usage: converse.sh [--with-turn] <session-id-or-tmux-name> <prompt-text> [timeout=120]}"
+PROMPT_TEXT="${2:?Usage: converse.sh [--with-turn] <session-id-or-tmux-name> <prompt-text> [timeout=120]}"
+TIMEOUT="${3:-120}"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SESSION_ID=$(resolve_session "$ID_OR_NAME")
+META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
+TMUX_NAME=$(jq -r '.tmux_name' "$META_FILE")
 EVENT_FILE="/tmp/claude-workers/${SESSION_ID}.events.jsonl"
 
 # Resolve the session log path (needed before and after the prompt)

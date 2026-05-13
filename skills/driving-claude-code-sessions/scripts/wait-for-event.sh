@@ -5,14 +5,23 @@ set -euo pipefail
 # Polls the file for new lines, checking each for a matching .event field.
 # Outputs the matching JSON line on stdout and exits 0 on match, exits 1 on timeout.
 #
-# Usage: wait-for-event.sh <session-id> <event-type> [timeout-seconds=60] [--after-line N]
+# Usage: wait-for-event.sh <session-id-or-tmux-name> <event-type> [timeout-seconds=60] [--after-line N]
+#
+# The first arg may be either a session_id (UUID) or a tmux_name; the worker
+# is resolved via /tmp/claude-workers/*.meta.
 #
 # --after-line N: Skip the first N lines. Only match events appearing after line N.
 #                 Use this in multi-turn patterns to avoid re-matching old events.
 
-SESSION_ID="${1:?Usage: wait-for-event.sh <session-id> <event-type> [timeout-seconds] [--after-line N]}"
-EVENT_TYPE="${2:?Usage: wait-for-event.sh <session-id> <event-type> [timeout-seconds] [--after-line N]}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_lib.sh
+source "$SCRIPT_DIR/_lib.sh"
+
+ID_OR_NAME="${1:?Usage: wait-for-event.sh <session-id-or-tmux-name> <event-type> [timeout-seconds] [--after-line N]}"
+EVENT_TYPE="${2:?Usage: wait-for-event.sh <session-id-or-tmux-name> <event-type> [timeout-seconds] [--after-line N]}"
 TIMEOUT="${3:-60}"
+
+SESSION_ID=$(resolve_session "$ID_OR_NAME")
 
 # Parse optional flags from remaining args
 AFTER_LINE=0

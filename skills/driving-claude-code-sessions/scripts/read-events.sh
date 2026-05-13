@@ -4,11 +4,18 @@ set -euo pipefail
 # Reads and filters the event stream for a session.
 # Outputs matching JSONL lines to stdout.
 #
-# Usage: read-events.sh <session-id> [--last N] [--type <event>] [--follow]
+# Usage: read-events.sh <session-id-or-tmux-name> [--last N] [--type <event>] [--follow]
+#
+# The first arg may be either a session_id (UUID) or a tmux_name.
 
-SESSION_ID="${1:?Usage: read-events.sh <session-id> [--last N] [--type <event>] [--follow]}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_lib.sh
+source "$SCRIPT_DIR/_lib.sh"
+
+ID_OR_NAME="${1:?Usage: read-events.sh <session-id-or-tmux-name> [--last N] [--type <event>] [--follow]}"
 shift
 
+SESSION_ID=$(resolve_session "$ID_OR_NAME")
 EVENT_FILE="/tmp/claude-workers/${SESSION_ID}.events.jsonl"
 
 if [ ! -f "$EVENT_FILE" ]; then

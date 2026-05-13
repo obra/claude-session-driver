@@ -7,21 +7,35 @@
   [agent-skills spec](https://agentskills.io/specification), bundled scripts
   belong in `<skill>/scripts/`. Helper scripts have moved from `scripts/`
   (plugin root) to `skills/driving-claude-code-sessions/scripts/`. The
-  SKILL.md now instructs the controller to set
-  `DRIVER="<this-skill's-base-directory>/scripts"` once at the top, then
-  reference scripts as `$DRIVER/launch-worker.sh` etc. throughout.
+  SKILL.md now uses bare relative paths (`scripts/launch-worker.sh`) and
+  instructs the controller to prepend this skill's absolute base path when
+  invoking via the Bash tool — matching the spec's "resolve relative paths
+  against the skill's directory, use absolute paths in tool calls" rule.
   **Breaking for anyone scripting against the old `<plugin-root>/scripts/`
   path**; update references to point at the skill's scripts directory.
+- **Every script accepts either `session_id` or `tmux_name`** as the worker
+  handle. `wait-for-event.sh`, `read-events.sh`, `read-turn.sh`,
+  `approve-tool.sh`, `converse.sh`, and `stop-worker.sh` all share a
+  resolver (`scripts/_lib.sh`) that looks up whichever form wasn't passed
+  via `/tmp/claude-workers/<id>.meta`. Cuts the bookkeeping a controller has
+  to thread through call chains.
 
 ### Added
-- `converse.sh --with-turn` flag returns the full markdown turn (tool calls,
+- `converse.sh --with-turn` returns the full markdown turn (tool calls,
   results, thinking, final text) via `read-turn.sh` instead of just the final
   assistant text. Useful when the worker is doing tool work and the bare
   text response strips out the interesting part.
-- `stop-worker.sh <session-id>` single-argument form resolves the tmux name
-  from the meta file. Same for `converse.sh <session-id> <prompt> [timeout]`.
-  Cuts the bookkeeping the controller has to track. The legacy
-  `<tmux-name> <session-id>` two-arg form is still accepted for back compat.
+- `list-workers.sh` joins `tmux ls` with `/tmp/claude-workers/*.meta` to show
+  every worker the plugin knows about with alive/dead status, useful when the
+  controller has lost track.
+- `current.sh` prints the session_id of the most recently launched worker —
+  for one-worker flows where threading the UUID through every call is
+  overhead.
+
+### Removed
+- Legacy `<tmux-name> <session-id>` two-arg form for `converse.sh` and
+  `stop-worker.sh`. With the resolver in place these are redundant; both now
+  take a single worker handle (either form).
 
 ## [1.0.2] - 2026-05-13
 

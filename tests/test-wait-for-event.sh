@@ -140,8 +140,11 @@ echo "Test 5: Works when file doesn't exist yet"
 setup
 SESSION_ID="test-wait-005"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
+# Meta file is required so the resolver in _lib.sh recognizes the session.
+# In real flow, launch-worker.sh creates this before wait-for-event runs.
+echo "{\"tmux_name\":\"test-wait-005\",\"session_id\":\"${SESSION_ID}\"}" > "$EVENT_DIR/${SESSION_ID}.meta"
 
-# File does NOT exist. Create it with the target event after 1.5 seconds.
+# Events file does NOT exist. Create it with the target event after 1.5 seconds.
 (sleep 1.5 && echo '{"ts":"2025-01-01T00:00:00Z","event":"stop"}' > "$EVENT_FILE") &
 
 OUTPUT=$(bash "$WAIT_FOR_EVENT" "$SESSION_ID" "stop" 10)

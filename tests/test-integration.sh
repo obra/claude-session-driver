@@ -37,7 +37,7 @@ run_test() {
 
 cleanup() {
   if [ -n "$SESSION_ID" ]; then
-    bash "$SCRIPTS_DIR/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>/dev/null || true
+    bash "$SCRIPTS_DIR/stop-worker.sh" "$SESSION_ID" 2>/dev/null || true
   fi
   # Belt and suspenders
   tmux kill-session -t "$TMUX_NAME" 2>/dev/null || true
@@ -215,7 +215,7 @@ fi
 # --- Test 10: Stop worker and verify cleanup ---
 run_test
 echo "Test 10: Stopping worker..."
-bash "$SCRIPTS_DIR/stop-worker.sh" "$TMUX_NAME" "$SESSION_ID" 2>&1
+bash "$SCRIPTS_DIR/stop-worker.sh" "$SESSION_ID" 2>&1
 # Clear SESSION_ID so cleanup trap doesn't double-stop
 STOPPED_SESSION_ID="$SESSION_ID"
 SESSION_ID=""
