@@ -1,16 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-# Lists every worker the plugin knows about. Joins /tmp/claude-workers/*.meta
-# with `tmux has-session` to show which workers are still alive vs whose tmux
-# session has gone away.
+# Lists worker sessions. By default shows only workers whose tmux session is
+# still alive — `--all` includes dead workers (meta files left behind because
+# the tmux session went away without stop-worker.sh cleaning up).
 #
 # Output format (one line per worker, tab-separated):
 #   <status>  <tmux_name>  <session_id>  <started_at>  <cwd>
 #
-# status is `alive` if the tmux session is still up, `dead` otherwise. Dead
-# workers usually mean the controller forgot to call stop-worker.sh — clean
-# up with `stop-worker.sh <session-id>` or `rm /tmp/claude-workers/<id>.*`.
+# Usage: list-workers.sh [--all]
+
+SHOW_DEAD=0
+if [ "${1:-}" = "--all" ]; then
+  SHOW_DEAD=1
+fi
 
 WORKER_DIR=/tmp/claude-workers
 
@@ -29,6 +32,7 @@ for meta in "$WORKER_DIR"/*.meta; do
     STATUS=alive
   else
     STATUS=dead
+    [ "$SHOW_DEAD" -eq 0 ] && continue
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$STATUS" "$TMUX_NAME" "$SESSION_ID" "$STARTED_AT" "$CWD"
 done

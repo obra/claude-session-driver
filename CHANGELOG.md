@@ -25,12 +25,20 @@
   results, thinking, final text) via `read-turn.sh` instead of just the final
   assistant text. Useful when the worker is doing tool work and the bare
   text response strips out the interesting part.
-- `list-workers.sh` joins `tmux ls` with `/tmp/claude-workers/*.meta` to show
-  every worker the plugin knows about with alive/dead status, useful when the
-  controller has lost track.
+- `list-workers.sh` shows alive workers by default; `--all` includes dead
+  ones (meta files left behind after tmux session went away). Pruning dead
+  workers is `stop-worker.sh <id>` on each — it cleans up files even when
+  the tmux session is already gone.
 - `current.sh` prints the session_id of the most recently launched worker —
   for one-worker flows where threading the UUID through every call is
   overhead.
+- `status.sh <worker>` returns one of `idle | working | awaiting-approval
+  | terminated | gone | unknown`. Use before sending a follow-up prompt to
+  avoid racing the worker mid-thought when using `send-prompt.sh` +
+  `wait-for-event.sh` directly rather than `converse.sh`.
+- `handoff.sh <worker>` prints a ready-to-paste handoff message with the
+  attach command, detach instructions, and a reminder not to stop the
+  worker mid-handoff.
 
 ### Removed
 - Legacy `<tmux-name> <session-id>` two-arg form for `converse.sh` and
