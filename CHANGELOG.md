@@ -3,13 +3,25 @@
 ## [1.1.0] - 2026-05-13
 
 ### Changed
-- **Scripts directory moved into the skill.** Per the [agent-skills spec](https://agentskills.io/specification),
-  bundled scripts belong in `<skill>/scripts/`. Helper scripts have moved from
-  `scripts/` (plugin root) to `skills/driving-claude-code-sessions/scripts/`.
-  The SKILL.md now references them with bare relative paths (e.g.
-  `scripts/launch-worker.sh`) instead of a `$SCRIPTS=` placeholder. **Breaking
-  for anyone scripting against the old `<plugin-root>/scripts/` path**; update
-  references to point at the skill's scripts directory.
+- **Scripts directory moved into the skill.** Per the
+  [agent-skills spec](https://agentskills.io/specification), bundled scripts
+  belong in `<skill>/scripts/`. Helper scripts have moved from `scripts/`
+  (plugin root) to `skills/driving-claude-code-sessions/scripts/`. The
+  SKILL.md now instructs the controller to set
+  `DRIVER="<this-skill's-base-directory>/scripts"` once at the top, then
+  reference scripts as `$DRIVER/launch-worker.sh` etc. throughout.
+  **Breaking for anyone scripting against the old `<plugin-root>/scripts/`
+  path**; update references to point at the skill's scripts directory.
+
+### Added
+- `converse.sh --with-turn` flag returns the full markdown turn (tool calls,
+  results, thinking, final text) via `read-turn.sh` instead of just the final
+  assistant text. Useful when the worker is doing tool work and the bare
+  text response strips out the interesting part.
+- `stop-worker.sh <session-id>` single-argument form resolves the tmux name
+  from the meta file. Same for `converse.sh <session-id> <prompt> [timeout]`.
+  Cuts the bookkeeping the controller has to track. The legacy
+  `<tmux-name> <session-id>` two-arg form is still accepted for back compat.
 
 ## [1.0.2] - 2026-05-13
 

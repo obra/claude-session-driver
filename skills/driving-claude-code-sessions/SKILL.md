@@ -20,20 +20,24 @@ These must be available on the system:
 
 ## Setup
 
-Helper scripts live in this skill's `scripts/` subdirectory. Invoke them with
-paths relative to the skill base directory (Claude Code provides the skill's
-absolute path):
+Helper scripts live in this skill's `scripts/` subdirectory. The Bash tool
+runs commands in your project's working directory, not the skill's, so set an
+absolute `$DRIVER` variable once before any commands and reference scripts
+through it. Substitute this skill's absolute base path (Claude Code provides
+it) for the placeholder:
 
 ```bash
-scripts/launch-worker.sh my-worker /path/to/project
+DRIVER="<this-skill's-base-directory>/scripts"
 ```
+
+Every command below uses `$DRIVER/<script>.sh`.
 
 ## Workflow
 
 ### 1. Launch a Worker
 
 ```bash
-RESULT=$(scripts/launch-worker.sh my-worker /path/to/project)
+RESULT=$($DRIVER/launch-worker.sh my-worker /path/to/project)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 TMUX_NAME=$(echo "$RESULT" | jq -r '.tmux_name')
 ```
@@ -49,23 +53,35 @@ Permission bypass is automatic. The worker's PreToolUse hook provides controller
 Pass extra `claude` CLI arguments after the working directory:
 ```bash
 # Use a specific model
-RESULT=$(scripts/launch-worker.sh my-worker /path/to/project --model sonnet)
+RESULT=$($DRIVER/launch-worker.sh my-worker /path/to/project --model sonnet)
 ```
 
 ### 2. Converse (Preferred)
 
-For most interactions, use `converse.sh` — it sends the prompt, waits for the worker to finish, and returns the assistant's response in one call:
+For most interactions, use `converse.sh` — it sends the prompt, waits for the
+worker to finish, and returns the assistant's response in one call:
 
 ```bash
-RESPONSE=$(scripts/converse.sh my-worker "$SESSION_ID" "Refactor the auth module to use JWT tokens" 300)
+RESPONSE=$($DRIVER/converse.sh "$SESSION_ID" "Refactor the auth module to use JWT tokens" 300)
 echo "$RESPONSE"
 ```
 
-It handles `--after-line` tracking automatically, so multi-turn conversations just work:
+By default this returns just the final assistant text. If the worker is doing
+tool work, the bare text response often strips out the interesting part — pass
+`--with-turn` to get the full markdown turn (tool calls, results, thinking,
+final text):
 
 ```bash
-R1=$(scripts/converse.sh my-worker "$SESSION_ID" "Write tests for the auth module" 300)
-R2=$(scripts/converse.sh my-worker "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
+TURN=$($DRIVER/converse.sh --with-turn "$SESSION_ID" "Run the failing tests and fix what you can" 600)
+echo "$TURN"
+```
+
+It handles `--after-line` tracking automatically, so multi-turn conversations
+just work:
+
+```bash
+R1=$($DRIVER/converse.sh "$SESSION_ID" "Write tests for the auth module" 300)
+R2=$($DRIVER/converse.sh "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
 ```
 
 ### 3. Send a Prompt (Low-Level)
@@ -73,13 +89,13 @@ R2=$(scripts/converse.sh my-worker "$SESSION_ID" "Now add edge case tests for ex
 For finer control, use the individual scripts. `send-prompt.sh` sends text without waiting:
 
 ```bash
-scripts/send-prompt.sh my-worker "Refactor the auth module to use JWT tokens"
+$DRIVER/send-prompt.sh my-worker "Refactor the auth module to use JWT tokens"
 ```
 
 ### 4. Wait for the Worker to Finish
 
 ```bash
-scripts/wait-for-event.sh "$SESSION_ID" stop 300
+$DRIVER/wait-for-event.sh "$SESSION_ID" stop 300
 ```
 
 This blocks until the worker emits a `stop` event (meaning it finished processing and is waiting for input) or the timeout (in seconds) expires. Exit code 0 means the event arrived; exit code 1 means timeout.
@@ -93,16 +109,16 @@ The matching event JSON line is printed to stdout:
 
 ```bash
 # All events
-scripts/read-events.sh "$SESSION_ID"
+$DRIVER/read-events.sh "$SESSION_ID"
 
 # Last 3 events
-scripts/read-events.sh "$SESSION_ID" --last 3
+$DRIVER/read-events.sh "$SESSION_ID" --last 3
 
 # Only stop events
-scripts/read-events.sh "$SESSION_ID" --type stop
+$DRIVER/read-events.sh "$SESSION_ID" --type stop
 
 # Follow in real-time (blocks -- run in background Bash job for monitoring)
-scripts/read-events.sh "$SESSION_ID" --follow &
+$DRIVER/read-events.sh "$SESSION_ID" --follow &
 MONITOR_PID=$!
 # ... do other work ... then stop monitoring:
 kill $MONITOR_PID 2>/dev/null
@@ -135,7 +151,7 @@ grep '"type":"assistant"' "$LOG_FILE" | tail -1 | jq -r '.message.content[] | se
 ### 7. Stop a Worker
 
 ```bash
-scripts/stop-worker.sh my-worker "$SESSION_ID"
+$DRIVER/stop-worker.sh "$SESSION_ID"
 ```
 
 The script:
@@ -161,14 +177,16 @@ Leave the worker running. Do not stop it when handing off.
 
 | Script | Usage | Description |
 |--------|-------|-------------|
-| `converse.sh` | `<tmux-name> <session-id> <prompt> [timeout=120]` | Send prompt, wait, return response |
+| `converse.sh` | `[--with-turn] <session-id> <prompt> [timeout=120]` | Send prompt, wait, return response (final text by default; full turn with `--with-turn`) |
 | `launch-worker.sh` | `<tmux-name> <working-dir> [claude-args...]` | Start a worker session |
 | `send-prompt.sh` | `<tmux-name> <prompt-text>` | Send a prompt to a worker |
 | `wait-for-event.sh` | `<session-id> <event-type> [timeout=60] [--after-line N]` | Block until event or timeout |
 | `read-events.sh` | `<session-id> [--last N] [--type T] [--follow]` | Read event stream |
-| `stop-worker.sh` | `<tmux-name> <session-id>` | Gracefully stop and clean up |
+| `stop-worker.sh` | `<session-id>` | Gracefully stop and clean up |
 | `approve-tool.sh` | `<session-id> <allow\|deny>` | Respond to a pending tool approval |
 | `read-turn.sh` | `<session-id> [--full]` | Format last turn as markdown |
+
+`converse.sh` and `stop-worker.sh` also accept the legacy `<tmux-name> <session-id>` two-arg form.
 
 All scripts exit 0 on success, non-zero on failure. Error messages go to stderr.
 
@@ -177,38 +195,38 @@ All scripts exit 0 on success, non-zero on failure. Error messages go to stderr.
 ### Single Worker: Delegate and Wait
 
 ```bash
-RESULT=$(scripts/launch-worker.sh task-worker ~/myproject)
+RESULT=$($DRIVER/launch-worker.sh task-worker ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 
-scripts/send-prompt.sh task-worker "Run the test suite and fix any failures"
-scripts/wait-for-event.sh "$SESSION_ID" stop 600
+$DRIVER/send-prompt.sh task-worker "Run the test suite and fix any failures"
+$DRIVER/wait-for-event.sh "$SESSION_ID" stop 600
 
 # Read what happened, then clean up
-scripts/read-events.sh "$SESSION_ID"
-scripts/stop-worker.sh task-worker "$SESSION_ID"
+$DRIVER/read-events.sh "$SESSION_ID"
+$DRIVER/stop-worker.sh "$SESSION_ID"
 ```
 
 ### Fan-Out: Multiple Workers in Parallel
 
 ```bash
 # Launch workers for different tasks
-R1=$(scripts/launch-worker.sh worker-api ~/myproject)
+R1=$($DRIVER/launch-worker.sh worker-api ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
 
-R2=$(scripts/launch-worker.sh worker-ui ~/myproject)
+R2=$($DRIVER/launch-worker.sh worker-ui ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
 
 # Send each their task
-scripts/send-prompt.sh worker-api "Add pagination to the /users endpoint"
-scripts/send-prompt.sh worker-ui "Add a loading spinner to the user list page"
+$DRIVER/send-prompt.sh worker-api "Add pagination to the /users endpoint"
+$DRIVER/send-prompt.sh worker-ui "Add a loading spinner to the user list page"
 
 # Wait for both (sequentially -- first one to finish unblocks its wait)
-scripts/wait-for-event.sh "$S1" stop 600
-scripts/wait-for-event.sh "$S2" stop 600
+$DRIVER/wait-for-event.sh "$S1" stop 600
+$DRIVER/wait-for-event.sh "$S2" stop 600
 
 # Clean up
-scripts/stop-worker.sh worker-api "$S1"
-scripts/stop-worker.sh worker-ui "$S2"
+$DRIVER/stop-worker.sh "$S1"
+$DRIVER/stop-worker.sh "$S2"
 ```
 
 ### Pipeline: Chained Workers
@@ -217,20 +235,20 @@ Pass one worker's output to the next:
 
 ```bash
 # Worker 1: Generate an API spec
-R1=$(scripts/launch-worker.sh worker-spec ~/myproject)
+R1=$($DRIVER/launch-worker.sh worker-spec ~/myproject)
 S1=$(echo "$R1" | jq -r '.session_id')
-scripts/send-prompt.sh worker-spec "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml"
-scripts/wait-for-event.sh "$S1" stop 300
+$DRIVER/send-prompt.sh worker-spec "Generate an OpenAPI spec for the users endpoint and save it to /tmp/api-spec.yaml"
+$DRIVER/wait-for-event.sh "$S1" stop 300
 
 # Worker 2: Implement from the spec that Worker 1 produced
-R2=$(scripts/launch-worker.sh worker-impl ~/myproject)
+R2=$($DRIVER/launch-worker.sh worker-impl ~/myproject)
 S2=$(echo "$R2" | jq -r '.session_id')
-scripts/send-prompt.sh worker-impl "Implement the API endpoint defined in /tmp/api-spec.yaml"
-scripts/wait-for-event.sh "$S2" stop 600
+$DRIVER/send-prompt.sh worker-impl "Implement the API endpoint defined in /tmp/api-spec.yaml"
+$DRIVER/wait-for-event.sh "$S2" stop 600
 
 # Clean up both
-scripts/stop-worker.sh worker-spec "$S1"
-scripts/stop-worker.sh worker-impl "$S2"
+$DRIVER/stop-worker.sh "$S1"
+$DRIVER/stop-worker.sh "$S2"
 ```
 
 The key: workers communicate through files on disk. The controller orchestrates the sequence.
@@ -240,13 +258,13 @@ The key: workers communicate through files on disk. The controller orchestrates 
 `converse.sh` handles `--after-line` tracking automatically, so multi-turn is straightforward:
 
 ```bash
-RESULT=$(scripts/launch-worker.sh supervised ~/myproject)
+RESULT=$($DRIVER/launch-worker.sh supervised ~/myproject)
 SESSION_ID=$(echo "$RESULT" | jq -r '.session_id')
 
-R1=$(scripts/converse.sh supervised "$SESSION_ID" "Write tests for the auth module" 300)
-R2=$(scripts/converse.sh supervised "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
+R1=$($DRIVER/converse.sh "$SESSION_ID" "Write tests for the auth module" 300)
+R2=$($DRIVER/converse.sh "$SESSION_ID" "Now add edge case tests for expired tokens" 300)
 
-scripts/stop-worker.sh supervised "$SESSION_ID"
+$DRIVER/stop-worker.sh "$SESSION_ID"
 ```
 
 ### Reviewing Worker Output
@@ -255,10 +273,10 @@ scripts/stop-worker.sh supervised "$SESSION_ID"
 
 ```bash
 # After a converse.sh call, review what the worker actually did
-scripts/read-turn.sh "$SESSION_ID"
+$DRIVER/read-turn.sh "$SESSION_ID"
 
 # Show complete tool results (default truncates to 5 lines)
-scripts/read-turn.sh "$SESSION_ID" --full
+$DRIVER/read-turn.sh "$SESSION_ID" --full
 ```
 
 Output is formatted as markdown: thinking in blockquotes, tool calls as code blocks, results in fenced blocks, and text responses inline.
@@ -288,7 +306,7 @@ The event file at `/tmp/claude-workers/<session-id>.events.jsonl` will still con
 `send-prompt.sh` sends text literally via `tmux send-keys -l`, which handles multi-line text and special characters correctly. Very long prompts (tens of KB) may hit tmux buffer limits. For extremely large inputs, consider writing the instructions to a file and telling the worker to read it:
 ```bash
 echo "Your detailed instructions here..." > /tmp/worker-instructions.txt
-scripts/send-prompt.sh my-worker "Read /tmp/worker-instructions.txt and follow those instructions"
+$DRIVER/send-prompt.sh my-worker "Read /tmp/worker-instructions.txt and follow those instructions"
 ```
 
 ### Tool Approval
@@ -308,16 +326,16 @@ if [ -f "$PENDING_FILE" ]; then
   cat "$PENDING_FILE"  # Shows tool_name and tool_input
 
   # Approve it
-  scripts/approve-tool.sh "$SESSION_ID" allow
+  $DRIVER/approve-tool.sh "$SESSION_ID" allow
 
   # Or deny it
-  scripts/approve-tool.sh "$SESSION_ID" deny
+  $DRIVER/approve-tool.sh "$SESSION_ID" deny
 fi
 ```
 
 The timeout is configurable via the `CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT` environment variable (default: 30 seconds). To change it, pass the env var when launching:
 ```bash
-RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=60 scripts/launch-worker.sh my-worker ~/project)
+RESULT=$(CLAUDE_SESSION_DRIVER_APPROVAL_TIMEOUT=60 $DRIVER/launch-worker.sh my-worker ~/project)
 ```
 
 ## Important Notes

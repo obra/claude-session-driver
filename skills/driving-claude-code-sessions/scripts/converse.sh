@@ -1,20 +1,48 @@
 #!/bin/bash
 set -euo pipefail
 
-# Sends a prompt to a worker, waits for it to finish, and prints the last
-# assistant response. Combines send-prompt + wait-for-event + read-response
-# into a single call.
+# Sends a prompt to a worker, waits for it to finish, and prints the worker's
+# response. Combines send-prompt + wait-for-event + read into a single call.
 #
-# Usage: converse.sh <tmux-name> <session-id> <prompt-text> [timeout=120]
+# Usage: converse.sh [--with-turn] <session-id> <prompt-text> [timeout=120]
+#        converse.sh [--with-turn] <tmux-name> <session-id> <prompt-text> [timeout=120]
+#
+# By default prints only the final assistant text on stdout. With --with-turn,
+# prints the full turn as markdown (via read-turn.sh) — useful when the worker
+# is doing tool work and the bare text response strips out the interesting
+# part.
+#
+# Accepts either the session-id alone (canonical) or the legacy
+# <tmux-name> <session-id> pair. With just <session-id>, the tmux name is
+# resolved from /tmp/claude-workers/<session-id>.meta.
 
-TMUX_NAME="${1:?Usage: converse.sh <tmux-name> <session-id> <prompt-text> [timeout=120]}"
-SESSION_ID="${2:?Usage: converse.sh <tmux-name> <session-id> <prompt-text> [timeout=120]}"
-PROMPT_TEXT="${3:?Usage: converse.sh <tmux-name> <session-id> <prompt-text> [timeout=120]}"
-TIMEOUT="${4:-120}"
+WITH_TURN=0
+if [ "${1:-}" = "--with-turn" ]; then
+  WITH_TURN=1
+  shift
+fi
+
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+if [[ "${1:-}" =~ $UUID_RE ]]; then
+  SESSION_ID="$1"
+  PROMPT_TEXT="${2:?Usage: converse.sh [--with-turn] <session-id> <prompt-text> [timeout=120]}"
+  TIMEOUT="${3:-120}"
+  META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
+  if [ ! -f "$META_FILE" ]; then
+    echo "Error: no meta file for session $SESSION_ID at $META_FILE" >&2
+    exit 1
+  fi
+  TMUX_NAME=$(jq -r '.tmux_name' "$META_FILE")
+else
+  TMUX_NAME="${1:?Usage: converse.sh [--with-turn] <session-id> <prompt-text> [timeout=120]}"
+  SESSION_ID="${2:?Usage: converse.sh [--with-turn] <tmux-name> <session-id> <prompt-text> [timeout=120]}"
+  PROMPT_TEXT="${3:?Usage: converse.sh [--with-turn] <tmux-name> <session-id> <prompt-text> [timeout=120]}"
+  TIMEOUT="${4:-120}"
+  META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVENT_FILE="/tmp/claude-workers/${SESSION_ID}.events.jsonl"
-META_FILE="/tmp/claude-workers/${SESSION_ID}.meta"
 
 # Resolve the session log path (needed before and after the prompt)
 CWD=$(jq -r '.cwd' "$META_FILE" 2>/dev/null)
@@ -81,6 +109,11 @@ for _ in $(seq 1 20); do
   fi
   AFTER_COUNT=$(count_text_messages)
   if [ "$AFTER_COUNT" -gt "$BEFORE_COUNT" ]; then
+    if [ "$WITH_TURN" -eq 1 ]; then
+      # Full markdown turn — preserves tool calls, thinking, and result blocks
+      bash "$SCRIPT_DIR/read-turn.sh" "$SESSION_ID"
+      exit 0
+    fi
     RESPONSE=$(last_text_response)
     if [ -n "$RESPONSE" ]; then
       echo "$RESPONSE"
