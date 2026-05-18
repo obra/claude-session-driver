@@ -21,6 +21,7 @@ ID_OR_NAME="${1:?Usage: wait-for-event.sh <session-id-or-tmux-name> <event-type>
 EVENT_TYPE="${2:?Usage: wait-for-event.sh <session-id-or-tmux-name> <event-type> [timeout-seconds] [--after-line N]}"
 TIMEOUT="${3:-60}"
 
+validate_event_type "$EVENT_TYPE"
 SESSION_ID=$(resolve_session "$ID_OR_NAME")
 
 # Parse optional flags from remaining args

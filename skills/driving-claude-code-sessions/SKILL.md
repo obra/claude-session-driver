@@ -168,13 +168,14 @@ MONITOR_PID=$!
 kill $MONITOR_PID 2>/dev/null
 ```
 
-Event types emitted by the plugin:
+Event types emitted by the plugin (this is the **complete** list — `wait-for-event.sh` and `read-events.sh --type` reject any other name fast rather than waiting out the timeout):
+
 | Event | Meaning | Extra fields |
 |-------|---------|-------------|
 | `session_start` | Worker session initialized | `cwd` |
 | `user_prompt_submit` | A prompt was submitted to the worker | |
 | `pre_tool_use` | Worker is about to call a tool | `tool`, `tool_input` |
-| `stop` | Worker finished processing, waiting for input | |
+| `stop` | Worker finished processing, waiting for input (this is the "turn done" signal — there is no `end_of_turn` event) | |
 | `session_end` | Worker session terminated | |
 
 ### 6. Read Worker Conversation Log

@@ -37,6 +37,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -n "$TYPE" ]; then
+  validate_event_type "$TYPE"
+fi
+
 if [ "$FOLLOW" = true ]; then
   tail -f "$EVENT_FILE" | while IFS= read -r line; do
     if [ -n "$TYPE" ]; then

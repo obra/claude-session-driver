@@ -90,9 +90,11 @@ setup
 SESSION_ID="test-wait-003"
 EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
 
+# Only a session_start present; waiting for a valid event that never arrives.
 echo '{"ts":"2025-01-01T00:00:00Z","event":"session_start","cwd":"/tmp"}' > "$EVENT_FILE"
 
-OUTPUT=$(bash "$WAIT_FOR_EVENT" "$SESSION_ID" "nonexistent_event" 2 2>/dev/null) || EXIT_CODE=$?
+EXIT_CODE=0
+OUTPUT=$(bash "$WAIT_FOR_EVENT" "$SESSION_ID" "stop" 2 2>/dev/null) || EXIT_CODE=$?
 
 if [ "${EXIT_CODE:-0}" -eq 1 ]; then
   pass "exits 1 on timeout"
@@ -104,6 +106,36 @@ if [ -z "$OUTPUT" ]; then
   pass "no stdout output on timeout"
 else
   fail "stdout on timeout" "expected empty, got '$OUTPUT'"
+fi
+
+# --- Test 3b: Rejects unknown event names fast ---
+echo "Test 3b: Rejects unknown event names fast"
+setup
+SESSION_ID="test-wait-003b"
+EVENT_FILE="$EVENT_DIR/${SESSION_ID}.events.jsonl"
+echo '{"ts":"2025-01-01T00:00:00Z","event":"session_start","cwd":"/tmp"}' > "$EVENT_FILE"
+
+START=$SECONDS
+EXIT_CODE=0
+STDERR_OUTPUT=$(bash "$WAIT_FOR_EVENT" "$SESSION_ID" "end_of_turn" 60 2>&1 >/dev/null) || EXIT_CODE=$?
+ELAPSED=$((SECONDS - START))
+
+if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+  pass "exits non-zero on invalid event name"
+else
+  fail "exit code" "expected non-zero, got 0"
+fi
+
+if [ "$ELAPSED" -lt 5 ]; then
+  pass "fails fast (under 5s, did not wait the 60s timeout)"
+else
+  fail "elapsed" "expected <5s, took ${ELAPSED}s"
+fi
+
+if echo "$STDERR_OUTPUT" | grep -q "not a known event type"; then
+  pass "stderr names the problem and lists valid events"
+else
+  fail "stderr message" "expected guidance about valid events, got '$STDERR_OUTPUT'"
 fi
 
 # --- Test 4: Ignores non-matching events ---

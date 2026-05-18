@@ -11,6 +11,21 @@
 
 _CSD_WORKER_DIR=/tmp/claude-workers
 
+# Event types emitted by the emit-event hook. Keep in sync with the case
+# statement in hooks/emit-event.
+_CSD_VALID_EVENTS="session_start user_prompt_submit pre_tool_use stop session_end"
+
+validate_event_type() {
+  local arg="$1"
+  for e in $_CSD_VALID_EVENTS; do
+    if [ "$arg" = "$e" ]; then
+      return 0
+    fi
+  done
+  echo "Error: '$arg' is not a known event type. Valid events: $_CSD_VALID_EVENTS" >&2
+  return 1
+}
+
 resolve_session() {
   local arg="$1"
   # If the arg directly corresponds to a known session_id (has either a meta
