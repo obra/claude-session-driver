@@ -126,7 +126,11 @@ If you see something you don't want, stop the worker:
 /tmp/claude-workers/bin/my-task stop
 ```
 
-Sends `/exit`, waits up to 10s for `session_end`, kills the tmux session if still running, and removes the meta, events, **and shim** files. After `stop`, calling the shim again fails with `no such file or directory` — that's expected; the worker is gone. If you need to drive the same name again, relaunch.
+Sends `/exit`, waits up to 10s for `session_end`, kills the tmux session if still running, and removes the meta, events, **and shim** files.
+
+`stop` is destructive: the worker is gone and the shim path stops working. If you wanted the worker around for follow-up turns or a parallel workflow, don't call `stop` until you're done with it. To resume work under the same name, relaunch — `csd launch my-task /path/to/project` again — and you'll get a fresh worker at the same shim path.
+
+After `stop`, the shim no longer exists, so invoking it again surfaces a shell error along the lines of `no such file or directory: /tmp/claude-workers/bin/my-task` (the exact wording depends on your shell). That's expected; the worker is gone.
 
 ### 6. Hand off to a human
 
