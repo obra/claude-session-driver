@@ -160,6 +160,51 @@ cmd_read_events() {
   fi
 }
 
+cmd_wait_for_turn() {
+  local timeout=60 after_line=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --after-line) after_line="$2"; shift 2 ;;
+      [0-9]*)       timeout="$1"; shift ;;
+      *) echo "Error: unknown option '$1' for wait-for-turn" >&2; return 2 ;;
+    esac
+  done
+
+  local sid event_file
+  sid=$(resolve_session "$WORKER")
+  event_file="/tmp/claude-workers/${sid}.events.jsonl"
+  local deadline=$((SECONDS + timeout))
+
+  while [ ! -f "$event_file" ]; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "Timeout waiting for event file: $event_file" >&2
+      return 1
+    fi
+    sleep 0.5
+  done
+
+  local lines_checked=$after_line
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local current_lines
+    current_lines=$(wc -l < "$event_file" | tr -d ' ')
+    if [ "$current_lines" -gt "$lines_checked" ]; then
+      local match
+      match=$(tail -n +"$((lines_checked + 1))" "$event_file" \
+        | jq -c 'select(.event == "stop" or .event == "session_end")' 2>/dev/null \
+        | head -1)
+      if [ -n "$match" ]; then
+        echo "$match"
+        return 0
+      fi
+      lines_checked=$current_lines
+    fi
+    sleep 0.5
+  done
+
+  echo "Timeout waiting for turn (stop or session_end) after ${timeout}s" >&2
+  return 1
+}
+
 cmd_list() {
   local show_dead=0
   while [ $# -gt 0 ]; do
@@ -245,7 +290,8 @@ case "$SUB" in
   events-file)     cmd_events_file ;;
   status)           cmd_status ;;
   read-events)      cmd_read_events "$@" ;;
-  launch|converse|send|wait-for-turn|\
+  wait-for-turn)  cmd_wait_for_turn "$@" ;;
+  launch|converse|send|\
   read-turn|stop|handoff)
     # Stubs — implemented in later tasks.
     echo "Error: '$SUB' not yet implemented" >&2
