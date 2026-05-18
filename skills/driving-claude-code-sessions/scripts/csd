@@ -366,6 +366,38 @@ cmd_send() {
   tmux send-keys -t "$tmux_name" Enter
 }
 
+cmd_stop() {
+  local sid tmux_name
+  sid=$(resolve_session "$WORKER")
+  tmux_name=$(jq -r '.tmux_name' "/tmp/claude-workers/${sid}.meta")
+
+  if tmux has-session -t "$tmux_name" 2>/dev/null; then
+    tmux send-keys -t "$tmux_name" -l '/exit'
+    tmux send-keys -t "$tmux_name" Enter
+
+    # Wait up to 10s for session_end
+    local event_file="/tmp/claude-workers/${sid}.events.jsonl"
+    local deadline=$((SECONDS + 10))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+      if [ -f "$event_file" ] && grep -q '"event":"session_end"' "$event_file"; then
+        sleep 1
+        break
+      fi
+      sleep 0.5
+    done
+
+    if tmux has-session -t "$tmux_name" 2>/dev/null; then
+      tmux kill-session -t "$tmux_name"
+    fi
+  fi
+
+  rm -f "/tmp/claude-workers/${sid}.events.jsonl"
+  rm -f "/tmp/claude-workers/${sid}.meta"
+  rm -f "/tmp/claude-workers/bin/${tmux_name}"
+
+  echo "Worker $tmux_name ($sid) stopped and cleaned up"
+}
+
 cmd_handoff() {
   local sid tmux_name
   sid=$(resolve_session "$WORKER")
@@ -611,9 +643,5 @@ case "$SUB" in
   converse)         cmd_converse "$@" ;;
   handoff)          cmd_handoff ;;
   launch)           cmd_launch "$@" ;;
-  stop)
-    # Stub — implemented in a later task.
-    echo "Error: '$SUB' not yet implemented" >&2
-    exit 99
-    ;;
+  stop)             cmd_stop ;;
 esac
