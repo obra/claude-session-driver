@@ -72,6 +72,16 @@ for sub in status session-id events-file send wait-for-turn read-events \
   fi
 done
 
+# --- Test 6: --worker with no value errors cleanly ---
+echo "Test 6: --worker with no value errors cleanly"
+EXIT_CODE=0
+OUTPUT=$(bash "$CSD" --worker 2>&1) || EXIT_CODE=$?
+if [ "$EXIT_CODE" -eq 2 ] && echo "$OUTPUT" | grep -qi "worker"; then
+  pass "--worker with no value exits 2 with error message"
+else
+  fail "--worker no value" "expected exit 2 and error message, got exit=$EXIT_CODE output=$OUTPUT"
+fi
+
 TOTAL=$((PASS_COUNT + FAIL_COUNT))
 echo ""
 echo "Results: $PASS_COUNT/$TOTAL passed, $FAIL_COUNT failed"

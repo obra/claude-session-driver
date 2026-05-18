@@ -21,7 +21,12 @@ source "$SCRIPT_DIR/_lib.sh"
 WORKER=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --worker) WORKER="$2"; shift 2 ;;
+    --worker)
+      if [ $# -lt 2 ]; then
+        echo "Error: --worker requires a value" >&2
+        exit 2
+      fi
+      WORKER="$2"; shift 2 ;;
     --worker=*) WORKER="${1#--worker=}"; shift ;;
     *) break ;;
   esac
@@ -91,7 +96,10 @@ case "$SUB" in
   help)
     usage
     ;;
-  launch|list|grant-consent|converse|send|wait-for-turn|status|read-events|read-turn|stop|handoff|session-id|events-file)
+  launch|list|grant-consent|\
+  converse|send|wait-for-turn|status|\
+  read-events|read-turn|stop|handoff|\
+  session-id|events-file)
     # Stubs — implemented in later tasks.
     echo "Error: '$SUB' not yet implemented" >&2
     exit 99
