@@ -79,6 +79,16 @@ EOF
   echo "Consent granted. Written: $consent_file"
 }
 
+cmd_session_id() {
+  resolve_session "$WORKER"
+}
+
+cmd_events_file() {
+  local sid
+  sid=$(resolve_session "$WORKER")
+  echo "/tmp/claude-workers/${sid}.events.jsonl"
+}
+
 cmd_list() {
   local show_dead=0
   while [ $# -gt 0 ]; do
@@ -160,9 +170,10 @@ case "$SUB" in
   help)            usage ;;
   grant-consent)   cmd_grant_consent ;;
   list)            cmd_list "$@" ;;
+  session-id)      cmd_session_id ;;
+  events-file)     cmd_events_file ;;
   launch|converse|send|wait-for-turn|status|\
-  read-events|read-turn|stop|handoff|\
-  session-id|events-file)
+  read-events|read-turn|stop|handoff)
     # Stubs — implemented in later tasks.
     echo "Error: '$SUB' not yet implemented" >&2
     exit 99
