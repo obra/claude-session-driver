@@ -103,7 +103,7 @@ stderr: Worker launched.
           reproduce:  csd launch foo /path/to/project -- --model sonnet
 ```
 
-Agents that capture `$(csd launch ...)` get the handle as a clean string. Humans reading the terminal see the panel. The `reproduce` line spells out the exact relaunch command, derived from the stored invocation in `<session-id>.meta`. A `--json` flag swaps stdout to a JSON object with all fields for scripted use.
+Agents that capture `$(csd launch ...)` get the handle as a clean string. Humans reading the terminal see the panel. The `reproduce` line spells out the exact relaunch command, derived from the stored invocation in `<session-id>.meta`.
 
 ## Event handling
 
