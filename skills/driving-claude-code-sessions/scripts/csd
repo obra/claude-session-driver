@@ -1,0 +1,99 @@
+#!/bin/bash
+set -euo pipefail
+
+# csd — single CLI for claude-session-driver. Dispatches to subcommand
+# functions defined below. Sources _lib.sh for shared helpers.
+#
+# Top-level subcommands (no --worker): launch, list, grant-consent
+# Per-worker subcommands (require --worker): converse, send, wait-for-turn,
+#   status, read-events, read-turn, stop, handoff, session-id, events-file
+#
+# Per-worker subcommands are normally invoked through a shim at
+# /tmp/claude-workers/bin/<tmux-name> that bakes in --worker. Direct
+# invocation as `csd --worker <name> <sub>` is also supported.
+
+CSD_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$CSD_PATH")"
+# shellcheck source=_lib.sh
+source "$SCRIPT_DIR/_lib.sh"
+
+# Parse --worker (top-level flag, before subcommand)
+WORKER=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --worker) WORKER="$2"; shift 2 ;;
+    --worker=*) WORKER="${1#--worker=}"; shift ;;
+    *) break ;;
+  esac
+done
+
+SUB="${1:-}"
+
+usage() {
+  cat <<EOF
+Usage: csd <subcommand> [args...]
+       csd --worker <name> <subcommand> [args...]
+
+Top-level subcommands:
+  launch <tmux-name> <cwd> [-- claude-args...]   Bootstrap a worker
+  list [--all]                                    Enumerate workers
+  grant-consent                                   One-time consent flow
+  help                                            Show this message
+
+Per-worker subcommands (require --worker, supplied by the shim):
+  converse [--with-turn] <prompt> [timeout]
+  send <prompt>
+  wait-for-turn [timeout]
+  status
+  read-events [--last N] [--type T] [--follow]
+  read-turn [--full]
+  stop
+  handoff
+  session-id
+  events-file
+EOF
+}
+
+TOP_LEVEL_SUBS=(launch list grant-consent help)
+PER_WORKER_SUBS=(converse send wait-for-turn status read-events read-turn \
+                 stop handoff session-id events-file)
+
+is_in() {
+  local needle="$1"; shift
+  for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
+  return 1
+}
+
+if [ -z "$SUB" ]; then
+  usage >&2
+  exit 2
+fi
+
+if is_in "$SUB" "${TOP_LEVEL_SUBS[@]}"; then
+  if [ -n "$WORKER" ]; then
+    echo "Error: --worker is not valid for '$SUB' (top-level subcommand)" >&2
+    exit 2
+  fi
+elif is_in "$SUB" "${PER_WORKER_SUBS[@]}"; then
+  if [ -z "$WORKER" ]; then
+    echo "Error: --worker <name> is required for '$SUB'" >&2
+    exit 2
+  fi
+else
+  echo "Error: unknown subcommand '$SUB'" >&2
+  usage >&2
+  exit 2
+fi
+
+shift  # consume the subcommand name
+
+case "$SUB" in
+  help)
+    usage
+    ;;
+  launch|list|grant-consent|converse|send|wait-for-turn|status|read-events|read-turn|stop|handoff|session-id|events-file)
+    # Stubs — implemented in later tasks.
+    echo "Error: '$SUB' not yet implemented" >&2
+    exit 99
+    ;;
+esac
