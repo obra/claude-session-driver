@@ -384,6 +384,142 @@ the session.
 EOF
 }
 
+cmd_launch() {
+  local tmux_name="${1:?Usage: launch <tmux-name> <cwd> [-- claude-args...]}"
+  local working_dir="${2:?Usage: launch <tmux-name> <cwd> [-- claude-args...]}"
+  shift 2
+  # Skip a leading -- separator if present
+  if [ "${1:-}" = "--" ]; then shift; fi
+  local extra_args=("$@")
+
+  # Capture the invocation for the reproduce line
+  local original_argv=("$tmux_name" "$working_dir")
+  if [ "${#extra_args[@]}" -gt 0 ]; then
+    original_argv+=("--" "${extra_args[@]}")
+  fi
+
+  # Resolve plugin root (three levels above scripts/)
+  local plugin_dir
+  plugin_dir="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+  # Resolve cwd to absolute, follow symlinks
+  if [ ! -d "$working_dir" ]; then
+    echo "Error: cwd '$working_dir' does not exist" >&2
+    return 1
+  fi
+  working_dir="$(cd "$working_dir" && pwd -P)"
+
+  # Consent check
+  local consent_file="$HOME/.claude/.claude-session-driver-consent"
+  if [ ! -f "$consent_file" ]; then
+    cat >&2 <<EOF
+Error: claude-session-driver requires one-time consent before launching workers.
+Run: $CSD_PATH grant-consent
+EOF
+    return 1
+  fi
+
+  # Generate session ID
+  local session_id
+  session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+  mkdir -p /tmp/claude-workers /tmp/claude-workers/bin
+
+  # Write meta (includes cwd and invocation for reproduce)
+  local invocation_json
+  invocation_json=$(printf '%s\n' "${original_argv[@]}" | jq -R . | jq -s .)
+  jq -n \
+    --arg tmux_name "$tmux_name" \
+    --arg session_id "$session_id" \
+    --arg cwd "$working_dir" \
+    --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --argjson invocation "$invocation_json" \
+    '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, invocation: $invocation}' \
+    > "/tmp/claude-workers/${session_id}.meta"
+
+  # Collision check
+  if tmux has-session -t "$tmux_name" 2>/dev/null; then
+    echo "Error: tmux session '$tmux_name' already exists" >&2
+    rm -f "/tmp/claude-workers/${session_id}.meta"
+    return 1
+  fi
+
+  # Start tmux. Allow override of the claude binary via CSD_CLAUDE_BIN for tests.
+  local claude_bin="${CSD_CLAUDE_BIN:-claude}"
+  tmux new-session -d -s "$tmux_name" -c "$working_dir" \
+    -e "CLAUDE_CODE_SSE_PORT=" \
+    -e "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=" \
+    "$claude_bin" --session-id "$session_id" --plugin-dir "$plugin_dir" \
+      --settings '{"skipDangerousModePermissionPrompt":true}' \
+      --dangerously-skip-permissions \
+      --disallowed-tools AskUserQuestion \
+      "${extra_args[@]+"${extra_args[@]}"}"
+
+  # Trust-dialog accept (content-aware) — same logic as legacy launch-worker.sh
+  local trust_deadline=$((SECONDS + 5))
+  while [ "$SECONDS" -lt "$trust_deadline" ]; do
+    local pane_text
+    pane_text=$(tmux capture-pane -t "$tmux_name" -p 2>/dev/null || true)
+    if echo "$pane_text" | grep -qF "trust this folder"; then
+      tmux send-keys -t "$tmux_name" Enter
+      break
+    fi
+    if [ -f "/tmp/claude-workers/${session_id}.events.jsonl" ] \
+       && grep -q '"event":"session_start"' "/tmp/claude-workers/${session_id}.events.jsonl" 2>/dev/null; then
+      break
+    fi
+    sleep 0.25
+  done
+
+  # Wait for session_start (inline poll — cmd_wait_for_turn only matches stop/session_end)
+  local event_file="/tmp/claude-workers/${session_id}.events.jsonl"
+  local deadline=$((SECONDS + 30))
+  local started=0
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -f "$event_file" ] && grep -q '"event":"session_start"' "$event_file"; then
+      started=1
+      break
+    fi
+    sleep 0.5
+  done
+
+  if [ "$started" -eq 0 ]; then
+    local pane
+    pane=$(tmux capture-pane -t "$tmux_name" -p 2>/dev/null | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -20 || true)
+    {
+      echo "Error: Worker session failed to start within 30 seconds"
+      if [ -n "$pane" ]; then
+        echo ""
+        echo "Last visible content in the worker pane:"
+        echo "----------"
+        echo "$pane"
+        echo "----------"
+      fi
+    } >&2
+    tmux kill-session -t "$tmux_name" 2>/dev/null || true
+    rm -f "/tmp/claude-workers/${session_id}.meta" "$event_file"
+    return 1
+  fi
+
+  # Write the shim
+  local shim_path="/tmp/claude-workers/bin/$tmux_name"
+  cat > "$shim_path" <<EOF
+#!/bin/bash
+exec "$CSD_PATH" --worker $tmux_name "\$@"
+EOF
+  chmod +x "$shim_path"
+
+  # Output: shim path on stdout, panel on stderr
+  echo "$shim_path"
+  {
+    echo "Worker launched."
+    echo "  tmux:       $tmux_name"
+    echo "  session_id: $session_id"
+    echo "  events:     $event_file"
+    echo "  reproduce:  $CSD_PATH launch ${original_argv[*]}"
+  } >&2
+}
+
 cmd_list() {
   local show_dead=0
   while [ $# -gt 0 ]; do
@@ -474,9 +610,9 @@ case "$SUB" in
   send)             cmd_send "$@" ;;
   converse)         cmd_converse "$@" ;;
   handoff)          cmd_handoff ;;
-  launch|\
+  launch)           cmd_launch "$@" ;;
   stop)
-    # Stubs — implemented in later tasks.
+    # Stub — implemented in a later task.
     echo "Error: '$SUB' not yet implemented" >&2
     exit 99
     ;;
