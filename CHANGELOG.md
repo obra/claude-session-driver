@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0 — 2026-05-18
+## [3.0.0] - 2026-05-18
 
 ### Breaking changes
 - Replaced 12 per-operation scripts with a single `csd` CLI at
