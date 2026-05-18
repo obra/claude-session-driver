@@ -114,6 +114,52 @@ cmd_status() {
   esac
 }
 
+cmd_read_events() {
+  local last="" type="" follow=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --last)   last="$2"; shift 2 ;;
+      --type)   type="$2"; shift 2 ;;
+      --follow) follow=true; shift ;;
+      *) echo "Error: unknown option '$1' for read-events" >&2; return 2 ;;
+    esac
+  done
+  if [ -n "$type" ]; then
+    validate_event_type "$type"
+  fi
+
+  local sid event_file
+  sid=$(resolve_session "$WORKER")
+  event_file="/tmp/claude-workers/${sid}.events.jsonl"
+  if [ ! -f "$event_file" ]; then
+    echo "Error: No event file for session $sid" >&2
+    return 1
+  fi
+
+  if [ "$follow" = true ]; then
+    tail -f "$event_file" | while IFS= read -r line; do
+      if [ -n "$type" ]; then
+        local e
+        e=$(echo "$line" | jq -r '.event // empty' 2>/dev/null) || continue
+        [ "$e" = "$type" ] && echo "$line"
+      else
+        echo "$line"
+      fi
+    done
+  else
+    local data
+    data=$(cat "$event_file")
+    if [ -n "$type" ]; then
+      data=$(echo "$data" | jq -c "select(.event == \"$type\")")
+    fi
+    if [ -n "$last" ]; then
+      echo "$data" | tail -n "$last"
+    else
+      echo "$data"
+    fi
+  fi
+}
+
 cmd_list() {
   local show_dead=0
   while [ $# -gt 0 ]; do
@@ -198,8 +244,9 @@ case "$SUB" in
   session-id)      cmd_session_id ;;
   events-file)     cmd_events_file ;;
   status)           cmd_status ;;
+  read-events)      cmd_read_events "$@" ;;
   launch|converse|send|wait-for-turn|\
-  read-events|read-turn|stop|handoff)
+  read-turn|stop|handoff)
     # Stubs — implemented in later tasks.
     echo "Error: '$SUB' not yet implemented" >&2
     exit 99
