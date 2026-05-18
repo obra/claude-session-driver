@@ -83,6 +83,13 @@ else
   fail "reproduce" "$STDERR"
 fi
 
+# stderr panel includes the worker's cwd
+if echo "$STDERR" | grep -qE "^\s*cwd:\s+/(private/)?tmp$"; then
+  pass "stderr panel includes cwd"
+else
+  fail "cwd line" "$STDERR"
+fi
+
 # meta file has cwd and invocation fields
 META=$(ls "$WDIR"/*.meta | xargs grep -l "$TMUX_NAME" | head -1)
 if jq -e '.cwd' "$META" >/dev/null; then

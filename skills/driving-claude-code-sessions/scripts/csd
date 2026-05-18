@@ -29,24 +29,56 @@ usage() {
 Usage: csd <subcommand> [args...]
        csd --worker <name> <subcommand> [args...]
 
+A worker is a Claude Code session in a tmux pane with the session-driver plugin
+loaded. \`csd launch\` prints a *shim path* on stdout (deterministic at
+/tmp/claude-workers/bin/<tmux-name>) — run that shim for all per-worker
+subcommands. \`csd stop\` removes the shim along with the worker's state.
+
 Top-level subcommands:
-  launch <tmux-name> <cwd> [-- claude-args...]   Bootstrap a worker
-  list [--all]                                    Enumerate workers
-  grant-consent                                   One-time consent flow
-  help                                            Show this message
+  launch <tmux-name> <cwd> [-- claude-args...]
+                       Bootstrap a worker; shim path on stdout, panel on stderr
+  list [--all] [<pattern>]
+                       Enumerate workers (default: skip workers whose tmux is
+                       gone). Optional pattern filters by tmux-name substring
+  grant-consent        One-time consent for --dangerously-skip-permissions
+  help                 Show this message
 
 Per-worker subcommands (require --worker, supplied by the shim):
-  converse [--with-turn] <prompt> [timeout]
-  send <prompt>
-  wait-for-turn [timeout]
-  status
+  converse [--with-turn] <prompt> [timeout=120]
+                       Send prompt, wait for turn, return assistant text.
+                       --with-turn returns the full markdown turn instead
+  send <prompt>        Send a prompt without waiting for the turn
+  wait-for-turn [timeout=60]
+                       Block until the next stop OR session_end
+  status               idle | working | terminated | gone | unknown
   read-events [--last N] [--type T] [--follow]
-  read-turn [--full]
-  stop
-  handoff
-  session-id
-  events-file
+                       Read the event JSONL stream
+  read-turn [--full]   Last turn as markdown. Without --full, tool results
+                       are truncated to 5 lines; --full shows them complete
+  stop                 /exit, clean up meta + events + shim
+  handoff              Print tmux-attach instructions for a human
+  session-id           Print the worker's session UUID
+  events-file          Print the absolute path to the events JSONL
 EOF
+}
+
+# Compute a worker's status. Args: <tmux_name> <event_file>.
+# Prints one of: idle | working | terminated | gone | unknown.
+_worker_status() {
+  local tmux_name="$1" event_file="$2" last_event
+  if ! tmux has-session -t "$tmux_name" 2>/dev/null; then
+    echo "gone"; return 0
+  fi
+  if [ ! -f "$event_file" ]; then
+    echo "unknown"; return 0
+  fi
+  last_event=$(tail -1 "$event_file" | jq -r '.event' 2>/dev/null || echo "")
+  case "$last_event" in
+    session_end)                     echo "terminated" ;;
+    user_prompt_submit|pre_tool_use) echo "working" ;;
+    stop|session_start)              echo "idle" ;;
+    *)                               echo "unknown" ;;
+  esac
 }
 
 is_in() {
@@ -90,28 +122,10 @@ cmd_events_file() {
 }
 
 cmd_status() {
-  local sid tmux_name event_file last_event
+  local sid tmux_name
   sid=$(resolve_session "$WORKER")
   tmux_name=$(jq -r '.tmux_name' "/tmp/claude-workers/${sid}.meta")
-
-  if ! tmux has-session -t "$tmux_name" 2>/dev/null; then
-    echo "gone"
-    return 0
-  fi
-
-  event_file="/tmp/claude-workers/${sid}.events.jsonl"
-  if [ ! -f "$event_file" ]; then
-    echo "unknown"
-    return 0
-  fi
-
-  last_event=$(tail -1 "$event_file" | jq -r '.event' 2>/dev/null || echo "")
-  case "$last_event" in
-    session_end)                     echo "terminated" ;;
-    user_prompt_submit|pre_tool_use) echo "working" ;;
-    stop|session_start)              echo "idle" ;;
-    *)                               echo "unknown" ;;
-  esac
+  _worker_status "$tmux_name" "/tmp/claude-workers/${sid}.events.jsonl"
 }
 
 cmd_read_events() {
@@ -395,7 +409,7 @@ cmd_stop() {
   rm -f "/tmp/claude-workers/${sid}.meta"
   rm -f "/tmp/claude-workers/bin/${tmux_name}"
 
-  echo "Worker $tmux_name ($sid) stopped and cleaned up"
+  echo "Worker $tmux_name ($sid) stopped. Shim removed."
 }
 
 cmd_handoff() {
@@ -541,23 +555,37 @@ exec "$CSD_PATH" --worker "$tmux_name" "\$@"
 EOF
   chmod +x "$shim_path"
 
+  # Build a safely-quoted reproduce line so args with whitespace survive.
+  local reproduce_args=""
+  local arg
+  for arg in "${original_argv[@]}"; do
+    reproduce_args+=" $(printf '%q' "$arg")"
+  done
+
   # Output: shim path on stdout, panel on stderr
   echo "$shim_path"
   {
     echo "Worker launched."
     echo "  tmux:       $tmux_name"
     echo "  session_id: $session_id"
+    echo "  cwd:        $working_dir"
     echo "  events:     $event_file"
-    echo "  reproduce:  $CSD_PATH launch ${original_argv[*]}"
+    echo "  reproduce: $(printf '%q' "$CSD_PATH") launch${reproduce_args}"
   } >&2
 }
 
 cmd_list() {
-  local show_dead=0
+  local include_gone=0 pattern=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --all) show_dead=1; shift ;;
-      *) echo "Error: unknown option '$1' for list" >&2; return 2 ;;
+      --all) include_gone=1; shift ;;
+      --*)   echo "Error: unknown option '$1' for list" >&2; return 2 ;;
+      *)
+        if [ -n "$pattern" ]; then
+          echo "Error: list takes at most one pattern argument" >&2
+          return 2
+        fi
+        pattern="$1"; shift ;;
     esac
   done
 
@@ -571,16 +599,18 @@ cmd_list() {
   fi
 
   printf '%s\t%s\t%s\t%s\t%s\n' STATUS TMUX SESSION_ID SHIM CWD
-  local meta tmux_name session_id cwd status
+  local meta tmux_name session_id cwd status event_file
   for meta in "${metas[@]}"; do
     tmux_name=$(jq -r '.tmux_name' "$meta")
     session_id=$(jq -r '.session_id' "$meta")
     cwd=$(jq -r '.cwd' "$meta")
-    if tmux has-session -t "$tmux_name" 2>/dev/null; then
-      status=alive
-    else
-      status=dead
-      [ "$show_dead" -eq 0 ] && continue
+    if [ -n "$pattern" ] && [[ "$tmux_name" != *"$pattern"* ]]; then
+      continue
+    fi
+    event_file="$worker_dir/${session_id}.events.jsonl"
+    status=$(_worker_status "$tmux_name" "$event_file")
+    if [ "$status" = "gone" ] && [ "$include_gone" -eq 0 ]; then
+      continue
     fi
     printf '%s\t%s\t%s\t%s\t%s\n' "$status" "$tmux_name" "$session_id" \
       "$worker_dir/bin/$tmux_name" "$cwd"

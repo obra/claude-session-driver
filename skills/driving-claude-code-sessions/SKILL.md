@@ -11,6 +11,8 @@ You can launch other Claude Code sessions as "workers" in tmux, send them prompt
 
 All operations go through a single CLI: `csd`. After launching a worker, the controller receives a **shim path** at `/tmp/claude-workers/bin/<tmux-name>` that bakes in the worker handle. Every per-worker operation goes through that path — no environment variables to remember, no absolute skill path to prepend.
 
+The shim path is deterministic: if you pick a memorable tmux name at launch, you can reconstruct `/tmp/claude-workers/bin/<tmux-name>` whenever you need it. For agents driving via tool calls, that's the right model — shell state doesn't persist between calls, so a `SHIM=...; $SHIM cmd` pattern just adds noise. The examples below use the bare path.
+
 ## Prerequisites
 
 - **tmux**
@@ -25,23 +27,27 @@ The CLI lives at `<skill>/scripts/csd`. Three top-level subcommands need the ski
 - `csd list [--all]` — enumerate workers
 - `csd grant-consent` — one-time consent for `--dangerously-skip-permissions`
 
-Once a worker is launched, capture the shim path it prints to stdout and use it for everything else.
+Once a worker is launched, run subsequent commands against `/tmp/claude-workers/bin/<tmux-name>`:
 
 ```bash
 SKILL=/abs/path/to/skill/scripts
-$SKILL/csd grant-consent          # one-time per machine
-WORKER=$($SKILL/csd launch my-task /path/to/project)
-# $WORKER is now /tmp/claude-workers/bin/my-task
+$SKILL/csd grant-consent                          # one-time per machine
+$SKILL/csd launch my-task /path/to/project        # stdout: /tmp/claude-workers/bin/my-task
+/tmp/claude-workers/bin/my-task status            # use the shim directly
 ```
 
-The shim path is deterministic — if you know the tmux name, the path is `/tmp/claude-workers/bin/<tmux-name>`. You don't need to keep the variable around if the name is memorable.
+Pick a memorable tmux name at launch; the shim path is then deterministic. (You *can* capture it into a shell variable in an interactive shell, but for agent-driven workflows the bare path is simpler — there's no shell state to lose between calls.)
 
 ## Workflow
+
+In examples below, `$SKILL` is the absolute path to `skills/driving-claude-code-sessions/scripts`. `WORKER` is the bare shim path (e.g. `/tmp/claude-workers/bin/my-task`) — substitute the deterministic path for your worker.
 
 ### 1. Launch
 
 ```bash
-WORKER=$($SKILL/csd launch my-task /path/to/project)
+$SKILL/csd launch my-task /path/to/project
+# stdout: /tmp/claude-workers/bin/my-task
+# stderr: Worker launched. tmux/session_id/cwd/events/reproduce
 ```
 
 `csd launch`:
@@ -49,31 +55,30 @@ WORKER=$($SKILL/csd launch my-task /path/to/project)
 - Starts tmux + claude with the plugin loaded
 - Waits up to 30s for `session_start`
 - Prints the shim path on stdout (one line)
-- Prints a "Worker launched" panel on stderr including a `reproduce:` line with the exact relaunch command
+- Prints a "Worker launched" panel on stderr — the `reproduce:` line is the exact command to relaunch with the same args
 
 Pass claude CLI args after a `--` separator:
 ```bash
-WORKER=$($SKILL/csd launch my-task /path/to/project -- --model sonnet)
+$SKILL/csd launch my-task /path/to/project -- --model sonnet
 ```
 
 ### 2. Converse (the typical case)
 
 ```bash
-RESPONSE=$($WORKER converse "Refactor the auth module" 300)
-echo "$RESPONSE"
+/tmp/claude-workers/bin/my-task converse "Refactor the auth module" 300
 ```
 
-`converse` sends the prompt, waits for the worker to finish, and returns the final assistant text. For tool-heavy turns where the bare text strips the interesting part, use `--with-turn` to get the full markdown:
+`converse` sends the prompt, waits for the worker to finish, and prints the final assistant text on stdout. For tool-heavy turns where the bare text strips the interesting part, use `--with-turn` to get the full markdown:
 
 ```bash
-TURN=$($WORKER converse --with-turn "Run the failing tests" 600)
+/tmp/claude-workers/bin/my-task converse --with-turn "Run the failing tests" 600
 ```
 
 Multi-turn just works — the wait tracks turn boundaries automatically:
 
 ```bash
-R1=$($WORKER converse "Write tests for the auth module" 300)
-R2=$($WORKER converse "Add edge cases for expired tokens" 300)
+/tmp/claude-workers/bin/my-task converse "Write tests for the auth module" 300
+/tmp/claude-workers/bin/my-task converse "Add edge cases for expired tokens" 300
 ```
 
 ### 3. Lower-level control
@@ -81,11 +86,11 @@ R2=$($WORKER converse "Add edge cases for expired tokens" 300)
 If you need to drive the worker more directly:
 
 ```bash
-$WORKER send "Refactor the auth module"     # send without waiting
-$WORKER wait-for-turn 300                    # block until stop or session_end
-$WORKER status                               # idle | working | terminated | gone
-$WORKER read-turn                            # last turn as markdown
-$WORKER read-turn --full                     # with complete tool results
+/tmp/claude-workers/bin/my-task send "Refactor the auth module"     # send without waiting
+/tmp/claude-workers/bin/my-task wait-for-turn 300                   # block until stop or session_end
+/tmp/claude-workers/bin/my-task status                              # idle | working | terminated | gone | unknown
+/tmp/claude-workers/bin/my-task read-turn                           # last turn as markdown (tool results truncated to 5 lines)
+/tmp/claude-workers/bin/my-task read-turn --full                    # last turn with complete tool results
 ```
 
 ### 4. Watching what the worker does
@@ -93,7 +98,7 @@ $WORKER read-turn --full                     # with complete tool results
 Every tool call emits a `pre_tool_use` event with the tool name and input. Tail the event stream to watch in real time:
 
 ```bash
-$WORKER read-events --follow &
+/tmp/claude-workers/bin/my-task read-events --follow &
 MONITOR_PID=$!
 # ... do other work ...
 kill $MONITOR_PID
@@ -102,9 +107,9 @@ kill $MONITOR_PID
 Or pull events after the fact:
 
 ```bash
-$WORKER read-events                # all events
-$WORKER read-events --last 5
-$WORKER read-events --type pre_tool_use
+/tmp/claude-workers/bin/my-task read-events                       # all events
+/tmp/claude-workers/bin/my-task read-events --last 5
+/tmp/claude-workers/bin/my-task read-events --type pre_tool_use
 ```
 
 `--type` accepts one of: `session_start`, `user_prompt_submit`, `pre_tool_use`, `stop`, `session_end`. Unknown event names fail fast.
@@ -112,85 +117,93 @@ $WORKER read-events --type pre_tool_use
 If you see something you don't want, stop the worker:
 
 ```bash
-$WORKER stop
+/tmp/claude-workers/bin/my-task stop
 ```
 
 ### 5. Stop and clean up
 
 ```bash
-$WORKER stop
+/tmp/claude-workers/bin/my-task stop
 ```
 
-Sends `/exit`, waits up to 10s for `session_end`, kills the tmux session if still running, and removes the meta, events, and shim files.
+Sends `/exit`, waits up to 10s for `session_end`, kills the tmux session if still running, and removes the meta, events, **and shim** files. After `stop`, calling the shim again fails with `no such file or directory` — that's expected; the worker is gone. If you need to drive the same name again, relaunch.
 
 ### 6. Hand off to a human
 
 ```bash
-$WORKER handoff
+/tmp/claude-workers/bin/my-task handoff
 ```
 
 Prints attach instructions for a human to take over the tmux session.
+
+### Finding workers
+
+```bash
+$SKILL/csd list                      # live workers (idle/working/terminated)
+$SKILL/csd list --all                # include 'gone' workers (tmux already exited)
+$SKILL/csd list api                  # substring filter on tmux name
+```
 
 ## Reference
 
 ```
 csd launch <tmux-name> <cwd> [-- claude-args...]
-csd list [--all]
+csd list [--all] [<pattern>]
 csd grant-consent
 
-$WORKER converse [--with-turn] <prompt> [timeout=120]
-$WORKER send <prompt>
-$WORKER wait-for-turn [timeout=60]
-$WORKER status
-$WORKER read-events [--last N] [--type T] [--follow]
-$WORKER read-turn [--full]
-$WORKER stop
-$WORKER handoff
-$WORKER session-id
-$WORKER events-file
+<shim> converse [--with-turn] <prompt> [timeout=120]
+<shim> send <prompt>
+<shim> wait-for-turn [timeout=60]
+<shim> status
+<shim> read-events [--last N] [--type T] [--follow]
+<shim> read-turn [--full]
+<shim> stop
+<shim> handoff
+<shim> session-id
+<shim> events-file
 ```
 
-Run `csd help` for the same surface.
+`<shim>` is `/tmp/claude-workers/bin/<tmux-name>`. Run `csd help` for the same surface.
 
 ## Common Patterns
 
 ### Fan-Out: Multiple Workers in Parallel
 
 ```bash
-W1=$($SKILL/csd launch worker-api ~/proj)
-W2=$($SKILL/csd launch worker-ui ~/proj)
+$SKILL/csd launch worker-api ~/proj
+$SKILL/csd launch worker-ui ~/proj
 
-$W1 send "Add pagination to /users"
-$W2 send "Add a loading spinner to the user list"
+/tmp/claude-workers/bin/worker-api send "Add pagination to /users"
+/tmp/claude-workers/bin/worker-ui send "Add a loading spinner to the user list"
 
-$W1 wait-for-turn 600
-$W2 wait-for-turn 600
+/tmp/claude-workers/bin/worker-api wait-for-turn 600
+/tmp/claude-workers/bin/worker-ui wait-for-turn 600
 
-$W1 stop
-$W2 stop
+/tmp/claude-workers/bin/worker-api stop
+/tmp/claude-workers/bin/worker-ui stop
 ```
 
 ### Pipeline: Worker A produces, Worker B consumes
 
 ```bash
-W1=$($SKILL/csd launch spec ~/proj)
-$W1 converse "Write an OpenAPI spec for /users to /tmp/api.yaml" 300
-$W1 stop
+$SKILL/csd launch spec ~/proj
+/tmp/claude-workers/bin/spec converse "Write an OpenAPI spec for /users to /tmp/api.yaml" 300
+/tmp/claude-workers/bin/spec stop
 
-W2=$($SKILL/csd launch impl ~/proj)
-$W2 converse "Implement the endpoint defined in /tmp/api.yaml" 600
-$W2 stop
+$SKILL/csd launch impl ~/proj
+/tmp/claude-workers/bin/impl converse "Implement the endpoint defined in /tmp/api.yaml" 600
+/tmp/claude-workers/bin/impl stop
 ```
 
 ## Edge Cases
 
 ### Worker crashes mid-turn
 
-`wait-for-turn` matches `stop` OR `session_end`, so it returns when the worker dies. Call `$WORKER status` afterward: if it's `gone`, the worker crashed.
+`wait-for-turn` matches `stop` OR `session_end`, so it returns when the worker dies. Call `status` afterward: if it's `gone`, the worker crashed.
 
 ### Lost the shim path
 
-If you know the tmux name, the path is `/tmp/claude-workers/bin/<tmux-name>`. If you don't, `csd list` enumerates everything.
+If you know the tmux name, the path is `/tmp/claude-workers/bin/<tmux-name>`. If you don't, `csd list` enumerates everything; `csd list <pattern>` filters by tmux-name substring.
 
 ### Long prompts
 
@@ -198,7 +211,7 @@ If you know the tmux name, the path is `/tmp/claude-workers/bin/<tmux-name>`. If
 
 ```bash
 echo "Long instructions..." > /tmp/instructions.txt
-$WORKER send "Read /tmp/instructions.txt and follow it"
+/tmp/claude-workers/bin/my-task send "Read /tmp/instructions.txt and follow it"
 ```
 
 ## Important Notes

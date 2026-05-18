@@ -27,12 +27,13 @@ echo '{"event":"stop"}' > "$WDIR/$SID.events.jsonl"
 echo '#!/bin/bash' > "$WDIR/bin/$TMUX_NAME"
 chmod +x "$WDIR/bin/$TMUX_NAME"
 
-bash "$CSD" --worker "$TMUX_NAME" stop >/dev/null
+STOP_OUTPUT=$(bash "$CSD" --worker "$TMUX_NAME" stop)
 
 tmux has-session -t "$TMUX_NAME" 2>/dev/null && fail "tmux still alive" "$(tmux ls)" || pass "tmux killed"
 [ ! -f "$WDIR/$SID.meta" ] && pass "meta removed" || fail "meta" "still present"
 [ ! -f "$WDIR/$SID.events.jsonl" ] && pass "events removed" || fail "events" "still present"
 [ ! -f "$WDIR/bin/$TMUX_NAME" ] && pass "shim removed" || fail "shim" "still present"
+echo "$STOP_OUTPUT" | grep -qi "shim removed" && pass "output mentions shim removed" || fail "output" "expected 'Shim removed' in: $STOP_OUTPUT"
 
 TOTAL=$((PASS_COUNT + FAIL_COUNT))
 echo ""
