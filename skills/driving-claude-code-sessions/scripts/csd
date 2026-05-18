@@ -89,6 +89,31 @@ cmd_events_file() {
   echo "/tmp/claude-workers/${sid}.events.jsonl"
 }
 
+cmd_status() {
+  local sid tmux_name event_file last_event
+  sid=$(resolve_session "$WORKER")
+  tmux_name=$(jq -r '.tmux_name' "/tmp/claude-workers/${sid}.meta")
+
+  if ! tmux has-session -t "$tmux_name" 2>/dev/null; then
+    echo "gone"
+    return 0
+  fi
+
+  event_file="/tmp/claude-workers/${sid}.events.jsonl"
+  if [ ! -f "$event_file" ]; then
+    echo "unknown"
+    return 0
+  fi
+
+  last_event=$(tail -1 "$event_file" | jq -r '.event' 2>/dev/null || echo "")
+  case "$last_event" in
+    session_end)                     echo "terminated" ;;
+    user_prompt_submit|pre_tool_use) echo "working" ;;
+    stop|session_start)              echo "idle" ;;
+    *)                               echo "unknown" ;;
+  esac
+}
+
 cmd_list() {
   local show_dead=0
   while [ $# -gt 0 ]; do
@@ -172,7 +197,8 @@ case "$SUB" in
   list)            cmd_list "$@" ;;
   session-id)      cmd_session_id ;;
   events-file)     cmd_events_file ;;
-  launch|converse|send|wait-for-turn|status|\
+  status)           cmd_status ;;
+  launch|converse|send|wait-for-turn|\
   read-events|read-turn|stop|handoff)
     # Stubs — implemented in later tasks.
     echo "Error: '$SUB' not yet implemented" >&2
