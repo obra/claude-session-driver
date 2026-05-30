@@ -59,6 +59,17 @@ Per-worker subcommands (require --worker, supplied by the shim):
   handoff              Print tmux-attach instructions for a human
   session-id           Print the worker's session UUID
   events-file          Print the absolute path to the events JSONL
+
+Environment variables:
+  CSD_CLAUDE_BIN       Path to the claude binary (default: claude — resolved via PATH).
+                       Set when claude is not on PATH or you want a specific version.
+  CSD_CONVERSE_DIAG_FILE
+                       When set, \`converse\` writes a post-mortem diagnostic (ps tree +
+                       tmux capture-pane + claude session JSONL tail + csd events tail)
+                       to this path on timeout, then emits "csd-diagnostic: <path>" to
+                       stderr. Overwritten on each timeout. Unset = no diagnostic file.
+  HOME                 Used to locate ~/.claude/projects/<encoded-cwd>/<sid>.jsonl and
+                       the one-time consent file (~/.claude/.claude-session-driver-consent).
 EOF
 }
 
@@ -85,6 +96,56 @@ is_in() {
   local needle="$1"; shift
   for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
   return 1
+}
+
+# _dump_converse_diag <sid> <worker> <log_file> <event_file> <timeout> <dest> <reason>
+# Best-effort post-mortem snapshot when cmd_converse times out. Writes a multi-section
+# dump (ps tree + tmux capture + claude JSONL tail + csd events tail) to <dest> so the
+# calling harness can surface it via its own diagnostic channels. The output file is
+# OVERWRITTEN on each call — successive timeouts within the same process clobber any
+# prior dump at the same path. Returns 0 on successful write, 1 on dir-create or write
+# failure so the caller can suppress its "see <dest>" stderr pointer.
+_dump_converse_diag() {
+  local sid="$1" worker="$2" log_file="$3" event_file="$4" timeout="$5" dest="$6" reason="${7:-converse_timeout}"
+  mkdir -p "$(dirname "$dest")" 2>/dev/null || return 1
+  # The user-facing $worker may be an alias; the real tmux session name lives in the meta.
+  local tmux_name=""
+  tmux_name=$(jq -r '.tmux_name // empty' "/tmp/claude-workers/${sid}.meta" 2>/dev/null || true)
+  [ -z "$tmux_name" ] && tmux_name="$worker"
+  {
+    echo "=== csd converse diagnostic ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ==="
+    echo "reason=$reason"
+    echo "session_id=$sid worker=$worker tmux_name=$tmux_name timeout=${timeout}s"
+    echo "log_file=$log_file"
+    echo "event_file=$event_file"
+    echo
+    echo "--- ps -eHo pid,ppid,stat,etime,comm (last 100 lines) ---"
+    ps -eHo pid,ppid,stat,etime,comm 2>&1 | tail -100 || true
+    echo
+    echo "--- tmux capture-pane -t $tmux_name (full scrollback, tail 200) ---"
+    if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_name" 2>/dev/null; then
+      tmux capture-pane -t "$tmux_name" -p -S - -E - 2>&1 | tail -200 || true
+    else
+      echo "(tmux session '$tmux_name' not present)"
+    fi
+    echo
+    echo "--- claude session JSONL tail (last 30 lines from $log_file) ---"
+    if [ -f "$log_file" ]; then
+      tail -n 30 "$log_file" || true
+    else
+      echo "(log file not present)"
+    fi
+    echo
+    echo "--- csd events JSONL tail (last 20 lines from $event_file) ---"
+    if [ -f "$event_file" ]; then
+      tail -n 20 "$event_file" || true
+    else
+      echo "(event file not present)"
+    fi
+    echo
+    echo "=== end csd diagnostic ==="
+  } > "$dest" 2>/dev/null || return 1
+  return 0
 }
 
 cmd_grant_consent() {
@@ -331,6 +392,11 @@ cmd_converse() {
 
   if ! cmd_wait_for_turn "$timeout" --after-line "$after_line" >/dev/null; then
     echo "Error: Worker did not finish within ${timeout}s" >&2
+    if [ -n "${CSD_CONVERSE_DIAG_FILE:-}" ] && \
+       _dump_converse_diag "$sid" "$WORKER" "$log_file" "$event_file" "$timeout" \
+         "$CSD_CONVERSE_DIAG_FILE" "wait_for_turn_timeout"; then
+      echo "csd-diagnostic: $CSD_CONVERSE_DIAG_FILE" >&2
+    fi
     return 1
   fi
 
@@ -354,6 +420,11 @@ cmd_converse() {
   done
 
   echo "Error: Timed out waiting for assistant response in session log" >&2
+  if [ -n "${CSD_CONVERSE_DIAG_FILE:-}" ] && \
+     _dump_converse_diag "$sid" "$WORKER" "$log_file" "$event_file" "$timeout" \
+       "$CSD_CONVERSE_DIAG_FILE" "no_assistant_response"; then
+    echo "csd-diagnostic: $CSD_CONVERSE_DIAG_FILE" >&2
+  fi
   return 1
 }
 

@@ -9,7 +9,7 @@ description: Use when acting as a project manager that delegates tasks to other 
 
 You can launch other Claude Code sessions as "workers" in tmux, send them prompts, wait for them to finish, read their output, and hand them off to a human. Workers run with `--dangerously-skip-permissions`, so they execute tool calls without prompting. A plugin (claude-session-driver) emits lifecycle events to a JSONL file so the controller can observe what the worker is doing.
 
-All operations go through a single CLI: `csd`. After launching a worker, the controller receives a **shim path** at `/tmp/claude-workers/bin/<tmux-name>` that bakes in the worker handle. Every per-worker operation goes through that path — no environment variables to remember, no absolute skill path to prepend.
+All operations go through a single CLI: `csd`. After launching a worker, the controller receives a **shim path** at `/tmp/claude-workers/bin/<tmux-name>` that bakes in the worker handle. Every per-worker operation goes through that path — no positional state to thread between calls, no absolute skill path to prepend. A small set of environment variables tune behavior; see [Environment variables](#environment-variables) at the bottom.
 
 The shim path is deterministic: if you pick a memorable tmux name at launch, you can reconstruct `/tmp/claude-workers/bin/<tmux-name>` whenever you need it. For agents driving via tool calls, that's the right model — shell state doesn't persist between calls, so a `SHIM=...; $SHIM cmd` pattern just adds noise. The examples below use the bare path.
 
@@ -223,3 +223,15 @@ echo "Long instructions..." > /tmp/instructions.txt
 - **One controller per worker.** Two controllers driving the same tmux session will collide.
 - **Workers don't share state with the controller** except via files on disk and the event stream.
 - **Shim paths bake in absolute skill paths.** A plugin reinstall at a new location breaks live workers; relaunch them.
+
+## Environment variables
+
+The `csd` CLI honors a small set of env vars. All are optional.
+
+| Variable | Purpose |
+|---|---|
+| `CSD_CLAUDE_BIN` | Path to the `claude` binary. Defaults to `claude` (resolved via `PATH`). Set when claude is not on `PATH` or you want to pin a specific version. |
+| `CSD_CONVERSE_DIAG_FILE` | When set, `csd converse` writes a post-mortem diagnostic on timeout — `ps` tree, `tmux capture-pane`, last 30 lines of the claude session JSONL, last 20 lines of the csd events JSONL — to this path, then emits a `csd-diagnostic: <path>` pointer to stderr. The file is overwritten on each timeout. Unset = no diagnostic file. Useful when wrapping csd in a harness that can ship the file off-box before the worker is reaped. |
+| `HOME` | Used to locate `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` and the one-time consent file (`~/.claude/.claude-session-driver-consent`). |
+
+The same list is shown by `csd help`.
