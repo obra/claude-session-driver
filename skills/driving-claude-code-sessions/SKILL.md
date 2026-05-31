@@ -24,6 +24,7 @@ The shim path is deterministic: if you pick a memorable tmux name at launch, you
 The CLI lives at `<skill>/scripts/csd`. Three top-level subcommands need the skill path:
 
 - `csd launch <tmux-name> <cwd> [-- claude-args...]` — bootstrap a worker
+- `csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]` — re-adopt an existing Claude session as a worker (see [Recovering workers](#recovering-workers-after-a-reboot))
 - `csd list [--all]` — enumerate workers
 - `csd grant-consent` — one-time consent for `--dangerously-skip-permissions`
 
@@ -152,6 +153,7 @@ $SKILL/csd list api                  # substring filter on tmux name
 
 ```
 csd launch <tmux-name> <cwd> [-- claude-args...]
+csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]
 csd list [--all] [<pattern>]
 csd grant-consent
 
@@ -204,6 +206,19 @@ $SKILL/csd launch impl ~/proj
 ### Worker crashes mid-turn
 
 `wait-for-turn` matches `stop` OR `session_end`, so it returns when the worker dies. Call `status` afterward: if it's `gone`, the worker crashed.
+
+### Recovering workers after a reboot
+
+Worker runtime state (the `meta`/`events`/`shim` files under `/tmp/claude-workers`) lives in `/tmp`, which macOS clears on reboot — and the tmux panes die with it. But the *conversations* survive: Claude Code persists each session transcript at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`. `csd adopt` brings one back as a live, driveable worker:
+
+```bash
+$SKILL/csd adopt my-task /path/to/project <session-id>
+# stdout: /tmp/claude-workers/bin/my-task   (same shim contract as launch)
+```
+
+`adopt` pre-writes the meta keyed by `<session-id>`, starts `claude --resume <session-id>` (which preserves the id, so the worker emits events normally), and writes the shim — so the resumed conversation is fully driveable (`converse`/`status`/`read-turn`/…), with all prior context intact. If a tmux session of that name already exists (e.g. restored by [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) / tmux-continuum), `adopt` respawns its pane *in place*, preserving the restored layout; otherwise it opens a new one.
+
+Find a worker's `<session-id>` from its working directory: the newest `*.jsonl` in `~/.claude/projects/<cwd with every / . _ replaced by ->`. For bulk recovery (e.g. pairing with tmux-continuum's `@continuum-boot`), `examples/recover-workers.sh` reads a tmux-resurrect snapshot, derives each id, and calls `adopt` per worker — run it with `--dry-run` first. Note: workers are restored as resumed sessions, not their original tool/MCP state; re-pass any launch args (e.g. `-- --model …`) you depended on.
 
 ### Lost the shim path
 

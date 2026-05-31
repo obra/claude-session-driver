@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]` — re-adopt an
+  existing Claude session as a driveable worker via `claude --resume`. Restores
+  a worker after a reboot/crash wiped `/tmp/claude-workers` while the session
+  transcript survived under `~/.claude/projects`. Pre-writes the meta keyed by
+  the (resume-preserved) session id so the worker emits events normally, then
+  writes the standard shim. If a tmux session of that name already exists (e.g.
+  restored by tmux-resurrect/continuum) it respawns the pane in place to
+  preserve the restored layout; otherwise it opens a new one.
+- `examples/recover-workers.sh` — bulk recovery built on `csd adopt`: derives
+  each worker's session id from a tmux-resurrect snapshot (or live tmux) and the
+  `~/.claude/projects` transcripts, with `--dry-run`, `--manifest` pins for
+  cwd-shared sessions, and `--pattern` filtering.
+
+### Internal
+- Extracted `_await_session_start` and `_write_worker_shim` helpers shared by
+  `cmd_launch` and `cmd_adopt` (no behavior change to `launch`).
+
 ## [3.0.0] - 2026-05-18
 
 ### Breaking changes

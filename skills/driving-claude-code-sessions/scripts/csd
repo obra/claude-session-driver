@@ -4,7 +4,7 @@ set -euo pipefail
 # csd — single CLI for claude-session-driver. Dispatches to subcommand
 # functions defined below. Sources _lib.sh for shared helpers.
 #
-# Top-level subcommands (no --worker): launch, list, grant-consent
+# Top-level subcommands (no --worker): launch, adopt, list, grant-consent
 # Per-worker subcommands (require --worker): converse, send, wait-for-turn,
 #   status, read-events, read-turn, stop, handoff, session-id, events-file
 #
@@ -18,7 +18,7 @@ SCRIPT_DIR="$(dirname "$CSD_PATH")"
 source "$SCRIPT_DIR/_lib.sh"
 
 # Constants / arrays
-TOP_LEVEL_SUBS=(launch list grant-consent help)
+TOP_LEVEL_SUBS=(launch adopt list grant-consent help)
 PER_WORKER_SUBS=(converse send wait-for-turn status read-events read-turn \
                  stop handoff session-id events-file)
 
@@ -37,6 +37,14 @@ subcommands. \`csd stop\` removes the shim along with the worker's state.
 Top-level subcommands:
   launch <tmux-name> <cwd> [-- claude-args...]
                        Bootstrap a worker; shim path on stdout, panel on stderr
+  adopt <tmux-name> <cwd> <session-id> [-- claude-args...]
+                       Re-adopt an existing Claude session as a driveable
+                       worker via \`claude --resume <session-id>\`. Restores a
+                       worker after a reboot/crash wiped /tmp/claude-workers
+                       while the conversation transcript survived. If a tmux
+                       session named <tmux-name> already exists (e.g. restored
+                       by tmux-resurrect), respawns its pane in place; else
+                       opens a new one. Shim path on stdout, panel on stderr
   list [--all] [<pattern>]
                        Enumerate workers (default: skip workers whose tmux is
                        gone). Optional pattern filters by tmux-name substring
@@ -501,6 +509,72 @@ the session.
 EOF
 }
 
+# _await_session_start <tmux_name> <session_id>
+# After claude has been started in the worker's tmux session, accept any
+# trust-folder dialog, then block until the plugin's SessionStart hook records a
+# session_start event (proof the worker is live and emitting). On failure: dump
+# the pane, tear down the tmux session, remove the meta + events, return 1.
+# Shared by cmd_launch and cmd_adopt.
+_await_session_start() {
+  local tmux_name="$1" session_id="$2"
+  local event_file="/tmp/claude-workers/${session_id}.events.jsonl"
+
+  # Trust-dialog accept (content-aware) — same logic as legacy launch-worker.sh
+  local trust_deadline=$((SECONDS + 5))
+  while [ "$SECONDS" -lt "$trust_deadline" ]; do
+    local pane_text
+    pane_text=$(tmux capture-pane -t "$tmux_name" -p 2>/dev/null || true)
+    if echo "$pane_text" | grep -qF "trust this folder"; then
+      tmux send-keys -t "$tmux_name" Enter
+      break
+    fi
+    if [ -f "$event_file" ] \
+       && grep -q '"event":"session_start"' "$event_file" 2>/dev/null; then
+      break
+    fi
+    sleep 0.25
+  done
+
+  # Wait for session_start (inline poll — cmd_wait_for_turn only matches stop/session_end)
+  local deadline=$((SECONDS + 30))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -f "$event_file" ] && grep -q '"event":"session_start"' "$event_file"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  local pane
+  pane=$(tmux capture-pane -t "$tmux_name" -p 2>/dev/null | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -20 || true)
+  {
+    echo "Error: Worker session failed to start within 30 seconds"
+    if [ -n "$pane" ]; then
+      echo ""
+      echo "Last visible content in the worker pane:"
+      echo "----------"
+      echo "$pane"
+      echo "----------"
+    fi
+  } >&2
+  tmux kill-session -t "$tmux_name" 2>/dev/null || true
+  rm -f "/tmp/claude-workers/${session_id}.meta" "$event_file"
+  return 1
+}
+
+# _write_worker_shim <tmux_name>
+# Write the per-worker shim that bakes in --worker and execs csd; echo its path.
+# Shared by cmd_launch and cmd_adopt.
+_write_worker_shim() {
+  local tmux_name="$1"
+  local shim_path="/tmp/claude-workers/bin/$tmux_name"
+  cat > "$shim_path" <<EOF
+#!/bin/bash
+exec "$CSD_PATH" --worker "$tmux_name" "\$@"
+EOF
+  chmod +x "$shim_path"
+  echo "$shim_path"
+}
+
 cmd_launch() {
   local tmux_name="${1:?Usage: launch <tmux-name> <cwd> [-- claude-args...]}"
   local working_dir="${2:?Usage: launch <tmux-name> <cwd> [-- claude-args...]}"
@@ -572,59 +646,12 @@ EOF
       --disallowed-tools AskUserQuestion \
       "${extra_args[@]+"${extra_args[@]}"}"
 
-  # Trust-dialog accept (content-aware) — same logic as legacy launch-worker.sh
-  local trust_deadline=$((SECONDS + 5))
-  while [ "$SECONDS" -lt "$trust_deadline" ]; do
-    local pane_text
-    pane_text=$(tmux capture-pane -t "$tmux_name" -p 2>/dev/null || true)
-    if echo "$pane_text" | grep -qF "trust this folder"; then
-      tmux send-keys -t "$tmux_name" Enter
-      break
-    fi
-    if [ -f "/tmp/claude-workers/${session_id}.events.jsonl" ] \
-       && grep -q '"event":"session_start"' "/tmp/claude-workers/${session_id}.events.jsonl" 2>/dev/null; then
-      break
-    fi
-    sleep 0.25
-  done
+  # Accept any trust dialog and block until the worker emits session_start.
+  _await_session_start "$tmux_name" "$session_id" || return 1
 
-  # Wait for session_start (inline poll — cmd_wait_for_turn only matches stop/session_end)
   local event_file="/tmp/claude-workers/${session_id}.events.jsonl"
-  local deadline=$((SECONDS + 30))
-  local started=0
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if [ -f "$event_file" ] && grep -q '"event":"session_start"' "$event_file"; then
-      started=1
-      break
-    fi
-    sleep 0.5
-  done
-
-  if [ "$started" -eq 0 ]; then
-    local pane
-    pane=$(tmux capture-pane -t "$tmux_name" -p 2>/dev/null | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -20 || true)
-    {
-      echo "Error: Worker session failed to start within 30 seconds"
-      if [ -n "$pane" ]; then
-        echo ""
-        echo "Last visible content in the worker pane:"
-        echo "----------"
-        echo "$pane"
-        echo "----------"
-      fi
-    } >&2
-    tmux kill-session -t "$tmux_name" 2>/dev/null || true
-    rm -f "/tmp/claude-workers/${session_id}.meta" "$event_file"
-    return 1
-  fi
-
-  # Write the shim
-  local shim_path="/tmp/claude-workers/bin/$tmux_name"
-  cat > "$shim_path" <<EOF
-#!/bin/bash
-exec "$CSD_PATH" --worker "$tmux_name" "\$@"
-EOF
-  chmod +x "$shim_path"
+  local shim_path
+  shim_path="$(_write_worker_shim "$tmux_name")"
 
   # Build a safely-quoted reproduce line so args with whitespace survive.
   local reproduce_args=""
@@ -642,6 +669,120 @@ EOF
     echo "  cwd:        $working_dir"
     echo "  events:     $event_file"
     echo "  reproduce: $(printf '%q' "$CSD_PATH") launch${reproduce_args}"
+  } >&2
+}
+
+cmd_adopt() {
+  local tmux_name="${1:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
+  local working_dir="${2:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
+  local session_id="${3:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
+  shift 3
+  # Skip a leading -- separator if present
+  if [ "${1:-}" = "--" ]; then shift; fi
+  local extra_args=("$@")
+
+  # Capture the invocation for the reproduce line
+  local original_argv=("$tmux_name" "$working_dir" "$session_id")
+  if [ "${#extra_args[@]}" -gt 0 ]; then
+    original_argv+=("--" "${extra_args[@]}")
+  fi
+
+  # Resolve plugin root (three levels above scripts/)
+  local plugin_dir
+  plugin_dir="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+  # Resolve cwd to absolute, follow symlinks
+  if [ ! -d "$working_dir" ]; then
+    echo "Error: cwd '$working_dir' does not exist" >&2
+    return 1
+  fi
+  working_dir="$(cd "$working_dir" && pwd -P)"
+
+  # Basic session-id sanity (UUID-ish: hex + dashes). Claude resolves the actual
+  # transcript on resume; this only guards obvious mistakes like passing a path.
+  if ! echo "$session_id" | grep -qE '^[0-9a-fA-F][0-9a-fA-F-]{7,}$'; then
+    echo "Error: '$session_id' does not look like a Claude session id" >&2
+    return 1
+  fi
+
+  # Consent check
+  local consent_file="$HOME/.claude/.claude-session-driver-consent"
+  if [ ! -f "$consent_file" ]; then
+    cat >&2 <<EOF
+Error: claude-session-driver requires one-time consent before launching workers.
+Run: $CSD_PATH grant-consent
+EOF
+    return 1
+  fi
+
+  mkdir -p /tmp/claude-workers /tmp/claude-workers/bin
+
+  # `claude --resume <id>` preserves the session id, so the worker's runtime
+  # session_id equals the id we were handed. Pre-write the meta keyed by it
+  # *before* starting claude: the SessionStart hook (emit-event) only records
+  # events once a meta file for that session_id exists.
+  local invocation_json
+  invocation_json=$(printf '%s\n' "${original_argv[@]}" | jq -R . | jq -s .)
+  jq -n \
+    --arg tmux_name "$tmux_name" \
+    --arg session_id "$session_id" \
+    --arg cwd "$working_dir" \
+    --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --argjson invocation "$invocation_json" \
+    '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, invocation: $invocation}' \
+    > "/tmp/claude-workers/${session_id}.meta"
+
+  # Start (or respawn) the worker with --resume instead of --session-id.
+  local claude_bin="${CSD_CLAUDE_BIN:-claude}"
+  local mode
+  if tmux has-session -t "$tmux_name" 2>/dev/null; then
+    # A pane with this name already exists — e.g. restored by tmux-resurrect /
+    # tmux-continuum after a reboot. Respawn it in place so the user's restored
+    # window layout is preserved; -k kills whatever dead command the restore left.
+    mode="respawned existing pane"
+    tmux respawn-pane -k -t "$tmux_name" -c "$working_dir" \
+      -e "CLAUDE_CODE_SSE_PORT=" \
+      -e "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=" \
+      "$claude_bin" --resume "$session_id" --plugin-dir "$plugin_dir" \
+        --settings '{"skipDangerousModePermissionPrompt":true}' \
+        --dangerously-skip-permissions \
+        --disallowed-tools AskUserQuestion \
+        "${extra_args[@]+"${extra_args[@]}"}"
+  else
+    mode="opened new pane"
+    tmux new-session -d -s "$tmux_name" -c "$working_dir" \
+      -e "CLAUDE_CODE_SSE_PORT=" \
+      -e "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=" \
+      "$claude_bin" --resume "$session_id" --plugin-dir "$plugin_dir" \
+        --settings '{"skipDangerousModePermissionPrompt":true}' \
+        --dangerously-skip-permissions \
+        --disallowed-tools AskUserQuestion \
+        "${extra_args[@]+"${extra_args[@]}"}"
+  fi
+
+  # Accept any trust dialog and block until the worker emits session_start.
+  _await_session_start "$tmux_name" "$session_id" || return 1
+
+  local event_file="/tmp/claude-workers/${session_id}.events.jsonl"
+  local shim_path
+  shim_path="$(_write_worker_shim "$tmux_name")"
+
+  # Build a safely-quoted reproduce line so args with whitespace survive.
+  local reproduce_args=""
+  local arg
+  for arg in "${original_argv[@]}"; do
+    reproduce_args+=" $(printf '%q' "$arg")"
+  done
+
+  # Output: shim path on stdout, panel on stderr
+  echo "$shim_path"
+  {
+    echo "Worker adopted ($mode)."
+    echo "  tmux:       $tmux_name"
+    echo "  session_id: $session_id"
+    echo "  cwd:        $working_dir"
+    echo "  events:     $event_file"
+    echo "  reproduce: $(printf '%q' "$CSD_PATH") adopt${reproduce_args}"
   } >&2
 }
 
@@ -744,5 +885,6 @@ case "$SUB" in
   converse)         cmd_converse "$@" ;;
   handoff)          cmd_handoff ;;
   launch)           cmd_launch "$@" ;;
+  adopt)            cmd_adopt "$@" ;;
   stop)             cmd_stop ;;
 esac
