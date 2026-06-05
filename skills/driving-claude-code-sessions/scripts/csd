@@ -987,6 +987,17 @@ fi
 
 shift  # consume the subcommand name
 
+# Load the harness driver before dispatching. Per-worker subs read the harness
+# from the worker meta (default claude); launch/adopt default to claude here
+# (the --harness flag + per-command override is added in a later task).
+if is_in "$SUB" "${PER_WORKER_SUBS[@]}"; then
+  _wsid=$(resolve_session "$WORKER") || exit 1
+  _whar=$(jq -r '.harness // "claude"' "/tmp/claude-workers/${_wsid}.meta" 2>/dev/null)
+  _load_driver "${_whar:-claude}"
+elif [ "$SUB" = "launch" ] || [ "$SUB" = "adopt" ]; then
+  _load_driver claude
+fi
+
 case "$SUB" in
   help)            usage ;;
   grant-consent)   cmd_grant_consent ;;

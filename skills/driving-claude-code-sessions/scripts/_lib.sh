@@ -9,6 +9,22 @@
 #                           non-zero with a message to stderr if neither
 #                           matches a known worker.
 
+# Absolute path to scripts/ (this file's dir). Used to locate drivers/.
+_CSD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source the harness driver for <harness> (default claude). Drivers live at
+# scripts/drivers/<harness>.sh and define the harness slot functions.
+_load_driver() {
+  local harness="${1:-claude}"
+  local driver_file="$_CSD_SCRIPT_DIR/drivers/${harness}.sh"
+  if [ ! -f "$driver_file" ]; then
+    echo "Error: no driver for harness '$harness' (expected $driver_file)" >&2
+    return 1
+  fi
+  # shellcheck source=/dev/null
+  source "$driver_file"
+}
+
 _CSD_WORKER_DIR=/tmp/claude-workers
 
 # Event types emitted by the emit-event hook. Keep in sync with the case
