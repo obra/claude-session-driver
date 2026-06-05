@@ -49,3 +49,11 @@ harness_launch_argv() {
     --dangerously-skip-permissions \
     --disallowed-tools AskUserQuestion
 }
+
+# Echo the transcript path for <sid> in <cwd> (cwd resolved to absolute first).
+harness_transcript_path() {
+  local sid="$1" cwd="$2"
+  if [ -d "$cwd" ]; then cwd=$(cd "$cwd" && pwd -P); fi
+  local encoded="${cwd//\//-}"
+  echo "$HOME/.claude/projects/${encoded}/${sid}.jsonl"
+}

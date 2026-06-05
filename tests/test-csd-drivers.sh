@@ -32,4 +32,7 @@ echo "$out" | grep -qx "CLAUDE_CODE_USE_BEDROCK=" && pass "env: unset bedrock pi
 out2=$(CLAUDE_CODE_USE_BEDROCK=1 envprobe true)
 echo "$out2" | grep -qx "CLAUDE_CODE_USE_BEDROCK=" && fail "env set-bedrock" "should NOT pin a set var" || pass "env: set bedrock left to inherit"
 
+tp=$( ( source "$SCR/_lib.sh"; _load_driver claude; HOME=/home/x harness_transcript_path SID /a/b ) )
+[ "$tp" = "/home/x/.claude/projects/-a-b/SID.jsonl" ] && pass "transcript_path formula" || fail "transcript_path" "got $tp"
+
 echo "drivers: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

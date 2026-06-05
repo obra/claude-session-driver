@@ -302,11 +302,7 @@ cmd_read_turn() {
     echo "Error: Could not determine working directory from meta file" >&2
     return 1
   fi
-  if [ -d "$cwd" ]; then
-    cwd=$(cd "$cwd" && pwd -P)
-  fi
-  encoded="${cwd//\//-}"
-  log_file="$HOME/.claude/projects/${encoded}/${sid}.jsonl"
+  log_file=$(harness_transcript_path "$sid" "$cwd")
 
   if [ ! -f "$log_file" ]; then
     echo "Error: Session log not found at $log_file" >&2
@@ -372,11 +368,7 @@ cmd_converse() {
     echo "Error: Could not determine working directory from meta file" >&2
     return 1
   fi
-  if [ -d "$cwd" ]; then
-    cwd=$(cd "$cwd" && pwd -P)
-  fi
-  encoded="${cwd//\//-}"
-  log_file="$HOME/.claude/projects/${encoded}/${sid}.jsonl"
+  log_file=$(harness_transcript_path "$sid" "$cwd")
   event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
 
   count_text_messages() {
