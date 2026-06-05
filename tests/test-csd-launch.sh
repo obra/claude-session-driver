@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CSD="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/csd"
-WDIR=/tmp/claude-workers
+WDIR=/tmp/csd-workers
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -24,7 +24,7 @@ mkdir -p "$WDIR" "$WDIR/bin" "$FAKE_HOME/.claude"
 touch "$FAKE_HOME/.claude/.claude-session-driver-consent"
 
 # Use the harness's existing fake-claude trick: launch points at a /bin/sh that
-# emits session_start by writing to /tmp/claude-workers/<sid>.events.jsonl.
+# emits session_start by writing to /tmp/csd-workers/<sid>.events.jsonl.
 # We need the session_id, so we wrap a tiny helper that the test injects via
 # the test-mode flag --test-claude-cmd.
 
@@ -41,9 +41,9 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-mkdir -p /tmp/claude-workers
+mkdir -p /tmp/csd-workers
 echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"event\":\"session_start\",\"cwd\":\"$PWD\"}" \
-  > "/tmp/claude-workers/${SID}.events.jsonl"
+  > "/tmp/csd-workers/${SID}.events.jsonl"
 # Stay alive so tmux session persists
 exec sleep 60
 BASH
@@ -52,7 +52,7 @@ chmod +x "$FAKE_CLAUDE"
 OUTPUT=$(CSD_CLAUDE_BIN="$FAKE_CLAUDE" HOME="$FAKE_HOME" \
          bash "$CSD" launch "$TMUX_NAME" /tmp -- --model sonnet 2>/tmp/launch-stderr-$$)
 STDERR=$(cat /tmp/launch-stderr-$$ || true); rm -f /tmp/launch-stderr-$$
-EXPECTED_SHIM="/tmp/claude-workers/bin/$TMUX_NAME"
+EXPECTED_SHIM="/tmp/csd-workers/bin/$TMUX_NAME"
 
 # stdout is exactly the shim path
 if [ "$OUTPUT" = "$EXPECTED_SHIM" ]; then

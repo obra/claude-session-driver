@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 EMIT_EVENT="$SCRIPT_DIR/../hooks/emit-event"
-EVENT_DIR="/tmp/claude-workers"
+EVENT_DIR="/tmp/csd-workers"
 
 PASS_COUNT=0
 FAIL_COUNT=0

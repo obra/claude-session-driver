@@ -17,12 +17,12 @@ touch "$FAKE_HOME/.claude/.claude-session-driver-consent"
 
 cleanup() {
   tmux kill-session -t "$TMUX_NAME" 2>/dev/null || true
-  rm -f /tmp/claude-workers/bin/"$TMUX_NAME"
-  for f in /tmp/claude-workers/*.meta; do
+  rm -f /tmp/csd-workers/bin/"$TMUX_NAME"
+  for f in /tmp/csd-workers/*.meta; do
     [ -f "$f" ] || continue
     if jq -e --arg n "$TMUX_NAME" '.tmux_name == $n' "$f" >/dev/null 2>&1; then
       sid=$(jq -r '.session_id' "$f")
-      rm -f "$f" "/tmp/claude-workers/${sid}.events.jsonl"
+      rm -f "$f" "/tmp/csd-workers/${sid}.events.jsonl"
     fi
   done
 }
@@ -39,9 +39,9 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-mkdir -p /tmp/claude-workers
+mkdir -p /tmp/csd-workers
 echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"event\":\"session_start\",\"cwd\":\"$PWD\"}" \
-  > "/tmp/claude-workers/${SID}.events.jsonl"
+  > "/tmp/csd-workers/${SID}.events.jsonl"
 exec sleep 60
 BASH
 chmod +x "$FAKE_CLAUDE"
@@ -56,7 +56,7 @@ STATUS=$("$SHIM" status)
 
 # session-id via shim matches meta
 SID_VIA_SHIM=$("$SHIM" session-id)
-META=$(ls /tmp/claude-workers/*.meta | xargs grep -l "$TMUX_NAME" | head -1)
+META=$(ls /tmp/csd-workers/*.meta | xargs grep -l "$TMUX_NAME" | head -1)
 SID_IN_META=$(jq -r '.session_id' "$META")
 [ "$SID_VIA_SHIM" = "$SID_IN_META" ] && pass "session-id matches" || fail "sid" "shim=$SID_VIA_SHIM meta=$SID_IN_META"
 

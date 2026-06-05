@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CSD="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/csd"
-WDIR=/tmp/claude-workers
+WDIR=/tmp/csd-workers
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -12,7 +12,7 @@ fail() { echo "  FAIL: $1 - $2"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
 # Use a synthetic HOME so we don't touch the real ~/.claude/projects.
 FAKE_HOME=$(mktemp -d)
-trap 'rm -rf "$FAKE_HOME"; rm -f /tmp/claude-workers/test-rt-*.meta /tmp/claude-workers/test-rt-*.events.jsonl' EXIT
+trap 'rm -rf "$FAKE_HOME"; rm -f /tmp/csd-workers/test-rt-*.meta /tmp/csd-workers/test-rt-*.events.jsonl' EXIT
 mkdir -p "$WDIR"
 
 SID="test-rt-001"

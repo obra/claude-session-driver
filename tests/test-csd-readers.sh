@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CSD="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/csd"
-WDIR=/tmp/claude-workers
+WDIR=/tmp/csd-workers
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -42,7 +42,7 @@ fi
 # --- events-file path ---
 echo "Test 3: events-file"
 OUTPUT=$(bash "$CSD" --worker "$TMUX_NAME" events-file)
-EXPECTED="/tmp/claude-workers/$SESSION_ID.events.jsonl"
+EXPECTED="/tmp/csd-workers/$SESSION_ID.events.jsonl"
 if [ "$OUTPUT" = "$EXPECTED" ]; then
   pass "events-file path"
 else

@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# Worker state dir (kept in sync with _lib.sh; honors CSD_WORKER_DIR).
+WORKER_DIR="${CSD_WORKER_DIR:-/tmp/csd-workers}"
+
 # Hook script called by Claude Code for session lifecycle events.
 # Reads hook input JSON from stdin and appends a JSONL event line
 # to /tmp/claude-workers/<session_id>.events.jsonl.
@@ -31,7 +34,7 @@ fi
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
 
 # Only emit events for managed worker sessions.
-if [ ! -f "/tmp/claude-workers/${SESSION_ID}.meta" ]; then
+if [ ! -f "$WORKER_DIR/${SESSION_ID}.meta" ]; then
   exit 0
 fi
 
@@ -48,7 +51,7 @@ case "$HOOK_EVENT" in
   *)                EVENT=$(echo "$HOOK_EVENT" | sed 's/\([A-Z]\)/_\L\1/g' | sed 's/^_//') ;;
 esac
 
-mkdir -p /tmp/claude-workers
+mkdir -p "$WORKER_DIR"
 
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -69,7 +72,7 @@ else
     '{ts: $ts, event: $event}')
 fi
 
-EVENT_FILE="/tmp/claude-workers/${SESSION_ID}.events.jsonl"
+EVENT_FILE="$WORKER_DIR/${SESSION_ID}.events.jsonl"
 echo "$EVENT_JSON" >> "$EVENT_FILE"
 
 # For Stop events, approve so we never block the agent

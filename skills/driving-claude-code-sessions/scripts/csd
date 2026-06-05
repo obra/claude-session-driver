@@ -602,6 +602,12 @@ EOF
   session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
   mkdir -p $_CSD_WORKER_DIR $_CSD_WORKER_DIR/bin
+  # Best-effort back-compat: only symlink the legacy path when it doesn't already
+  # exist (a leftover real /tmp/claude-workers dir from older csd is left alone;
+  # relaunch any live pre-upgrade workers after this upgrade).
+  if [ "$_CSD_WORKER_DIR" = "/tmp/csd-workers" ] && [ ! -e /tmp/claude-workers ]; then
+    ln -s /tmp/csd-workers /tmp/claude-workers 2>/dev/null || true
+  fi
 
   # Write meta (includes cwd and invocation for reproduce)
   local invocation_json
@@ -709,6 +715,12 @@ EOF
   fi
 
   mkdir -p $_CSD_WORKER_DIR $_CSD_WORKER_DIR/bin
+  # Best-effort back-compat: only symlink the legacy path when it doesn't already
+  # exist (a leftover real /tmp/claude-workers dir from older csd is left alone;
+  # relaunch any live pre-upgrade workers after this upgrade).
+  if [ "$_CSD_WORKER_DIR" = "/tmp/csd-workers" ] && [ ! -e /tmp/claude-workers ]; then
+    ln -s /tmp/csd-workers /tmp/claude-workers 2>/dev/null || true
+  fi
 
   # `claude --resume <id>` preserves the session id, so the worker's runtime
   # session_id equals the id we were handed. Pre-write the meta keyed by it

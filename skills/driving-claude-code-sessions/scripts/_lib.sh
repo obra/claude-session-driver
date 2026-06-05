@@ -25,7 +25,7 @@ _load_driver() {
   source "$driver_file"
 }
 
-_CSD_WORKER_DIR=/tmp/claude-workers
+_CSD_WORKER_DIR="${CSD_WORKER_DIR:-/tmp/csd-workers}"
 
 # Event types emitted by the emit-event hook. Keep in sync with the case
 # statement in hooks/emit-event.

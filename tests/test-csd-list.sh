@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CSD="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/csd"
-WDIR=/tmp/claude-workers
+WDIR=/tmp/csd-workers
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -41,7 +41,7 @@ if echo "$OUTPUT" | grep -q "test-list-dead"; then
 else
   pass "gone worker excluded by default"
 fi
-if echo "$OUTPUT" | grep -q "/tmp/claude-workers/bin/test-list-alive"; then
+if echo "$OUTPUT" | grep -q "/tmp/csd-workers/bin/test-list-alive"; then
   pass "shim path included in output"
 else
   fail "shim path" "expected shim path in row, got: $OUTPUT"

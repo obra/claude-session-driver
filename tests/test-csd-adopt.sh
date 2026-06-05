@@ -8,7 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CSD="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/csd"
-WDIR=/tmp/claude-workers
+WDIR=/tmp/csd-workers
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -46,9 +46,9 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-mkdir -p /tmp/claude-workers
+mkdir -p /tmp/csd-workers
 echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"event\":\"session_start\",\"cwd\":\"$PWD\"}" \
-  > "/tmp/claude-workers/${SID}.events.jsonl"
+  > "/tmp/csd-workers/${SID}.events.jsonl"
 exec sleep 60
 BASH
 chmod +x "$FAKE_CLAUDE"

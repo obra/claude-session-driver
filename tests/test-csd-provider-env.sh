@@ -19,12 +19,12 @@ set -euo pipefail
 #                                     inherit, alongside its credentials.
 #
 # Strategy: a stub `claude` dumps the provider/auth env it actually received to
-# /tmp/claude-workers/<sid>.env-dump. We launch with controlled controller env
+# /tmp/csd-workers/<sid>.env-dump. We launch with controlled controller env
 # and a deliberately-polluted tmux global env, then inspect the dump.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CSD="$SCRIPT_DIR/../skills/driving-claude-code-sessions/scripts/csd"
-WDIR=/tmp/claude-workers
+WDIR=/tmp/csd-workers
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -90,16 +90,16 @@ cat > "$FAKE_CLAUDE" <<'BASH'
 #!/bin/bash
 SID=""
 while [ $# -gt 0 ]; do case "$1" in --session-id) SID="$2"; shift 2 ;; *) shift ;; esac; done
-mkdir -p /tmp/claude-workers
+mkdir -p /tmp/csd-workers
 {
   for v in CLAUDE_CODE_SSE_PORT CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST \
            CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY \
            CLAUDE_CODE_USE_ANTHROPIC_AWS CLAUDE_CODE_USE_MANTLE; do
     if val=$(printenv "$v"); then printf '%s=[%s]\n' "$v" "$val"; else printf '%s=UNSET\n' "$v"; fi
   done
-} > "/tmp/claude-workers/${SID}.env-dump"
+} > "/tmp/csd-workers/${SID}.env-dump"
 echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"event\":\"session_start\",\"cwd\":\"$PWD\"}" \
-  > "/tmp/claude-workers/${SID}.events.jsonl"
+  > "/tmp/csd-workers/${SID}.events.jsonl"
 exec sleep 60
 BASH
 chmod +x "$FAKE_CLAUDE"
