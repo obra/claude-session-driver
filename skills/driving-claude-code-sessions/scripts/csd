@@ -675,17 +675,16 @@ EOF
     return 1
   fi
 
-  # Start tmux. Allow override of the claude binary via CSD_CLAUDE_BIN for tests.
-  local claude_bin="${CSD_CLAUDE_BIN:-claude}"
+  # Build the harness launch argv (per-harness flags), then start tmux.
+  local launch_argv=()
+  while IFS= read -r _tok; do launch_argv+=("$_tok"); done \
+    < <(harness_launch_argv launch "$session_id" "$plugin_dir")
   local WORKER_ENV_ARGS=()
   harness_env_args
   tmux new-session -d -s "$tmux_name" -c "$working_dir" \
     "${WORKER_ENV_ARGS[@]}" \
-    "$claude_bin" --session-id "$session_id" --plugin-dir "$plugin_dir" \
-      --settings '{"skipDangerousModePermissionPrompt":true}' \
-      --dangerously-skip-permissions \
-      --disallowed-tools AskUserQuestion \
-      "${extra_args[@]+"${extra_args[@]}"}"
+    "${launch_argv[@]}" \
+    "${extra_args[@]+"${extra_args[@]}"}"
 
   # Accept any trust dialog and block until the worker emits session_start.
   _await_session_start "$tmux_name" "$session_id" || return 1
@@ -773,8 +772,10 @@ EOF
     '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, invocation: $invocation}' \
     > "$_CSD_WORKER_DIR/${session_id}.meta"
 
-  # Start (or respawn) the worker with --resume instead of --session-id.
-  local claude_bin="${CSD_CLAUDE_BIN:-claude}"
+  # Build the harness resume argv (per-harness flags), then start/respawn tmux.
+  local launch_argv=()
+  while IFS= read -r _tok; do launch_argv+=("$_tok"); done \
+    < <(harness_launch_argv resume "$session_id" "$plugin_dir")
   local WORKER_ENV_ARGS=()
   harness_env_args
   local mode
@@ -784,21 +785,13 @@ EOF
     # window layout is preserved; -k kills whatever dead command the restore left.
     mode="respawned existing pane"
     tmux respawn-pane -k -t "$tmux_name" -c "$working_dir" \
-      "${WORKER_ENV_ARGS[@]}" \
-      "$claude_bin" --resume "$session_id" --plugin-dir "$plugin_dir" \
-        --settings '{"skipDangerousModePermissionPrompt":true}' \
-        --dangerously-skip-permissions \
-        --disallowed-tools AskUserQuestion \
-        "${extra_args[@]+"${extra_args[@]}"}"
+      "${WORKER_ENV_ARGS[@]}" "${launch_argv[@]}" \
+      "${extra_args[@]+"${extra_args[@]}"}"
   else
     mode="opened new pane"
     tmux new-session -d -s "$tmux_name" -c "$working_dir" \
-      "${WORKER_ENV_ARGS[@]}" \
-      "$claude_bin" --resume "$session_id" --plugin-dir "$plugin_dir" \
-        --settings '{"skipDangerousModePermissionPrompt":true}' \
-        --dangerously-skip-permissions \
-        --disallowed-tools AskUserQuestion \
-        "${extra_args[@]+"${extra_args[@]}"}"
+      "${WORKER_ENV_ARGS[@]}" "${launch_argv[@]}" \
+      "${extra_args[@]+"${extra_args[@]}"}"
   fi
 
   # Accept any trust dialog and block until the worker emits session_start.

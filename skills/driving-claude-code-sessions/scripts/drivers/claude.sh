@@ -33,3 +33,19 @@ harness_env_args() {
     fi
   done
 }
+
+# Print the harness command + flags (one token per line) for `mode`:
+#   launch -> --session-id <sid>;  resume -> --resume <sid>
+# The spine wraps this with tmux + env args + any user extra-args.
+harness_launch_argv() {
+  local mode="$1" sid="$2" plugin_dir="$3"
+  local bin idflag
+  bin=$(harness_bin)
+  idflag="--session-id"
+  [ "$mode" = "resume" ] && idflag="--resume"
+  printf '%s\n' \
+    "$bin" "$idflag" "$sid" --plugin-dir "$plugin_dir" \
+    --settings '{"skipDangerousModePermissionPrompt":true}' \
+    --dangerously-skip-permissions \
+    --disallowed-tools AskUserQuestion
+}
