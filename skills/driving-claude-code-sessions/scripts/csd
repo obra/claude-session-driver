@@ -9,7 +9,7 @@ set -euo pipefail
 #   status, read-events, read-turn, stop, handoff, session-id, events-file
 #
 # Per-worker subcommands are normally invoked through a shim at
-# /tmp/claude-workers/bin/<tmux-name> that bakes in --worker. Direct
+# $_CSD_WORKER_DIR/bin/<tmux-name> that bakes in --worker. Direct
 # invocation as `csd --worker <name> <sub>` is also supported.
 
 CSD_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -31,7 +31,7 @@ Usage: csd <subcommand> [args...]
 
 A worker is a Claude Code session in a tmux pane with the session-driver plugin
 loaded. \`csd launch\` prints a *shim path* on stdout (deterministic at
-/tmp/claude-workers/bin/<tmux-name>) — run that shim for all per-worker
+$_CSD_WORKER_DIR/bin/<tmux-name>) — run that shim for all per-worker
 subcommands. \`csd stop\` removes the shim along with the worker's state.
 
 Top-level subcommands:
@@ -40,7 +40,7 @@ Top-level subcommands:
   adopt <tmux-name> <cwd> <session-id> [-- claude-args...]
                        Re-adopt an existing Claude session as a driveable
                        worker via \`claude --resume <session-id>\`. Restores a
-                       worker after a reboot/crash wiped /tmp/claude-workers
+                       worker after a reboot/crash wiped $_CSD_WORKER_DIR
                        while the conversation transcript survived. If a tmux
                        session named <tmux-name> already exists (e.g. restored
                        by tmux-resurrect), respawns its pane in place; else
@@ -118,7 +118,7 @@ _dump_converse_diag() {
   mkdir -p "$(dirname "$dest")" 2>/dev/null || return 1
   # The user-facing $worker may be an alias; the real tmux session name lives in the meta.
   local tmux_name=""
-  tmux_name=$(jq -r '.tmux_name // empty' "/tmp/claude-workers/${sid}.meta" 2>/dev/null || true)
+  tmux_name=$(jq -r '.tmux_name // empty' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null || true)
   [ -z "$tmux_name" ] && tmux_name="$worker"
   {
     echo "=== csd converse diagnostic ($(date -u +%Y-%m-%dT%H:%M:%SZ)) ==="
@@ -187,14 +187,14 @@ cmd_session_id() {
 cmd_events_file() {
   local sid
   sid=$(resolve_session "$WORKER")
-  echo "/tmp/claude-workers/${sid}.events.jsonl"
+  echo "$_CSD_WORKER_DIR/${sid}.events.jsonl"
 }
 
 cmd_status() {
   local sid tmux_name
   sid=$(resolve_session "$WORKER")
-  tmux_name=$(jq -r '.tmux_name' "/tmp/claude-workers/${sid}.meta")
-  _worker_status "$tmux_name" "/tmp/claude-workers/${sid}.events.jsonl"
+  tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
+  _worker_status "$tmux_name" "$_CSD_WORKER_DIR/${sid}.events.jsonl"
 }
 
 cmd_read_events() {
@@ -213,7 +213,7 @@ cmd_read_events() {
 
   local sid event_file
   sid=$(resolve_session "$WORKER")
-  event_file="/tmp/claude-workers/${sid}.events.jsonl"
+  event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
   if [ ! -f "$event_file" ]; then
     echo "Error: No event file for session $sid" >&2
     return 1
@@ -255,7 +255,7 @@ cmd_wait_for_turn() {
 
   local sid event_file
   sid=$(resolve_session "$WORKER")
-  event_file="/tmp/claude-workers/${sid}.events.jsonl"
+  event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
   local deadline=$((SECONDS + timeout))
 
   while [ ! -f "$event_file" ]; do
@@ -297,7 +297,7 @@ cmd_read_turn() {
 
   local sid cwd encoded log_file last_prompt_line
   sid=$(resolve_session "$WORKER")
-  cwd=$(jq -r '.cwd' "/tmp/claude-workers/${sid}.meta" 2>/dev/null)
+  cwd=$(jq -r '.cwd' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null)
   if [ -z "$cwd" ] || [ "$cwd" = "null" ]; then
     echo "Error: Could not determine working directory from meta file" >&2
     return 1
@@ -367,7 +367,7 @@ cmd_converse() {
 
   local sid cwd encoded log_file event_file
   sid=$(resolve_session "$WORKER")
-  cwd=$(jq -r '.cwd' "/tmp/claude-workers/${sid}.meta" 2>/dev/null)
+  cwd=$(jq -r '.cwd' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null)
   if [ -z "$cwd" ] || [ "$cwd" = "null" ]; then
     echo "Error: Could not determine working directory from meta file" >&2
     return 1
@@ -377,7 +377,7 @@ cmd_converse() {
   fi
   encoded="${cwd//\//-}"
   log_file="$HOME/.claude/projects/${encoded}/${sid}.jsonl"
-  event_file="/tmp/claude-workers/${sid}.events.jsonl"
+  event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
 
   count_text_messages() {
     if [ ! -f "$log_file" ]; then echo 0; return; fi
@@ -452,14 +452,14 @@ cmd_send() {
   local prompt="${1:?Usage: send <prompt-text>}"
   local sid tmux_name
   sid=$(resolve_session "$WORKER")
-  tmux_name=$(jq -r '.tmux_name' "/tmp/claude-workers/${sid}.meta")
+  tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
 
   if ! tmux has-session -t "$tmux_name" 2>/dev/null; then
     echo "Error: tmux session '$tmux_name' does not exist" >&2
     return 1
   fi
 
-  local event_file="/tmp/claude-workers/${sid}.events.jsonl"
+  local event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
   local before_line=0
   [ -f "$event_file" ] && before_line=$(wc -l < "$event_file" | tr -d ' ')
 
@@ -501,14 +501,14 @@ cmd_send() {
 cmd_stop() {
   local sid tmux_name
   sid=$(resolve_session "$WORKER")
-  tmux_name=$(jq -r '.tmux_name' "/tmp/claude-workers/${sid}.meta")
+  tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
 
   if tmux has-session -t "$tmux_name" 2>/dev/null; then
     tmux send-keys -t "$tmux_name" -l '/exit'
     tmux send-keys -t "$tmux_name" Enter
 
     # Wait up to 10s for session_end
-    local event_file="/tmp/claude-workers/${sid}.events.jsonl"
+    local event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
     local deadline=$((SECONDS + 10))
     while [ "$SECONDS" -lt "$deadline" ]; do
       if [ -f "$event_file" ] && grep -q '"event":"session_end"' "$event_file"; then
@@ -523,9 +523,9 @@ cmd_stop() {
     fi
   fi
 
-  rm -f "/tmp/claude-workers/${sid}.events.jsonl"
-  rm -f "/tmp/claude-workers/${sid}.meta"
-  rm -f "/tmp/claude-workers/bin/${tmux_name}"
+  rm -f "$_CSD_WORKER_DIR/${sid}.events.jsonl"
+  rm -f "$_CSD_WORKER_DIR/${sid}.meta"
+  rm -f "$_CSD_WORKER_DIR/bin/${tmux_name}"
 
   echo "Worker $tmux_name ($sid) stopped. Shim removed."
 }
@@ -533,7 +533,7 @@ cmd_stop() {
 cmd_handoff() {
   local sid tmux_name
   sid=$(resolve_session "$WORKER")
-  tmux_name=$(jq -r '.tmux_name' "/tmp/claude-workers/${sid}.meta")
+  tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
   cat <<EOF
 The worker is running in tmux session '$tmux_name'. To take over:
 
@@ -556,7 +556,7 @@ EOF
 # Shared by cmd_launch and cmd_adopt.
 _await_session_start() {
   local tmux_name="$1" session_id="$2"
-  local event_file="/tmp/claude-workers/${session_id}.events.jsonl"
+  local event_file="$_CSD_WORKER_DIR/${session_id}.events.jsonl"
 
   # Trust-dialog accept (content-aware) — same logic as legacy launch-worker.sh
   local trust_deadline=$((SECONDS + 5))
@@ -596,7 +596,7 @@ _await_session_start() {
     fi
   } >&2
   tmux kill-session -t "$tmux_name" 2>/dev/null || true
-  rm -f "/tmp/claude-workers/${session_id}.meta" "$event_file"
+  rm -f "$_CSD_WORKER_DIR/${session_id}.meta" "$event_file"
   return 1
 }
 
@@ -605,7 +605,7 @@ _await_session_start() {
 # Shared by cmd_launch and cmd_adopt.
 _write_worker_shim() {
   local tmux_name="$1"
-  local shim_path="/tmp/claude-workers/bin/$tmux_name"
+  local shim_path="$_CSD_WORKER_DIR/bin/$tmux_name"
   cat > "$shim_path" <<EOF
 #!/bin/bash
 exec "$CSD_PATH" --worker "$tmux_name" "\$@"
@@ -729,7 +729,7 @@ EOF
   local session_id
   session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
-  mkdir -p /tmp/claude-workers /tmp/claude-workers/bin
+  mkdir -p $_CSD_WORKER_DIR $_CSD_WORKER_DIR/bin
 
   # Write meta (includes cwd and invocation for reproduce)
   local invocation_json
@@ -741,12 +741,12 @@ EOF
     --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     --argjson invocation "$invocation_json" \
     '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, invocation: $invocation}' \
-    > "/tmp/claude-workers/${session_id}.meta"
+    > "$_CSD_WORKER_DIR/${session_id}.meta"
 
   # Collision check
   if tmux has-session -t "$tmux_name" 2>/dev/null; then
     echo "Error: tmux session '$tmux_name' already exists" >&2
-    rm -f "/tmp/claude-workers/${session_id}.meta"
+    rm -f "$_CSD_WORKER_DIR/${session_id}.meta"
     return 1
   fi
 
@@ -765,7 +765,7 @@ EOF
   # Accept any trust dialog and block until the worker emits session_start.
   _await_session_start "$tmux_name" "$session_id" || return 1
 
-  local event_file="/tmp/claude-workers/${session_id}.events.jsonl"
+  local event_file="$_CSD_WORKER_DIR/${session_id}.events.jsonl"
   local shim_path
   shim_path="$(_write_worker_shim "$tmux_name")"
 
@@ -831,7 +831,7 @@ EOF
     return 1
   fi
 
-  mkdir -p /tmp/claude-workers /tmp/claude-workers/bin
+  mkdir -p $_CSD_WORKER_DIR $_CSD_WORKER_DIR/bin
 
   # `claude --resume <id>` preserves the session id, so the worker's runtime
   # session_id equals the id we were handed. Pre-write the meta keyed by it
@@ -846,7 +846,7 @@ EOF
     --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     --argjson invocation "$invocation_json" \
     '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, invocation: $invocation}' \
-    > "/tmp/claude-workers/${session_id}.meta"
+    > "$_CSD_WORKER_DIR/${session_id}.meta"
 
   # Start (or respawn) the worker with --resume instead of --session-id.
   local claude_bin="${CSD_CLAUDE_BIN:-claude}"
@@ -879,7 +879,7 @@ EOF
   # Accept any trust dialog and block until the worker emits session_start.
   _await_session_start "$tmux_name" "$session_id" || return 1
 
-  local event_file="/tmp/claude-workers/${session_id}.events.jsonl"
+  local event_file="$_CSD_WORKER_DIR/${session_id}.events.jsonl"
   local shim_path
   shim_path="$(_write_worker_shim "$tmux_name")"
 
@@ -917,7 +917,7 @@ cmd_list() {
     esac
   done
 
-  local worker_dir=/tmp/claude-workers
+  local worker_dir=$_CSD_WORKER_DIR
   shopt -s nullglob
   local metas=("$worker_dir"/*.meta)
   shopt -u nullglob
@@ -992,7 +992,7 @@ shift  # consume the subcommand name
 # (the --harness flag + per-command override is added in a later task).
 if is_in "$SUB" "${PER_WORKER_SUBS[@]}"; then
   _wsid=$(resolve_session "$WORKER") || exit 1
-  _whar=$(jq -r '.harness // "claude"' "/tmp/claude-workers/${_wsid}.meta" 2>/dev/null)
+  _whar=$(jq -r '.harness // "claude"' "$_CSD_WORKER_DIR/${_wsid}.meta" 2>/dev/null)
   _load_driver "${_whar:-claude}"
 elif [ "$SUB" = "launch" ] || [ "$SUB" = "adopt" ]; then
   _load_driver claude
