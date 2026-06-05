@@ -446,7 +446,7 @@ cmd_stop() {
   tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
 
   if tmux has-session -t "$tmux_name" 2>/dev/null; then
-    tmux send-keys -t "$tmux_name" -l '/exit'
+    tmux send-keys -t "$tmux_name" -l "$(harness_quit_keys)"
     tmux send-keys -t "$tmux_name" Enter
 
     # Wait up to 10s for session_end
