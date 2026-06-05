@@ -614,81 +614,6 @@ EOF
   echo "$shim_path"
 }
 
-# Provider/auth environment variables that Claude Code resolves directly from
-# the process environment. We pin these for the worker (issue #18).
-#
-# Why pinning is necessary — the tmux inheritance trap:
-#   `tmux new-session` does NOT inherit *this* process's environment. A new
-#   session inherits the tmux SERVER's global environment, captured when the
-#   server first started (often an older, unrelated shell). So a stale
-#   `CLAUDE_CODE_USE_BEDROCK=1` left in the server's global env by some earlier
-#   session silently leaks into every worker — even after the operator removed
-#   it from their shell and settings. `tmux show-environment -g` reveals it.
-#
-# Why it breaks auth — how Claude Code reads these (verified against the
-# v2.1.x binary's provider-selection and auth code):
-#   * Provider selection is, in effect,
-#       USE_BEDROCK ? "bedrock" : USE_FOUNDRY ? "foundry" : USE_ANTHROPIC_AWS ?
-#       "anthropicAws" : USE_MANTLE ? "mantle" : USE_VERTEX ? "vertex"
-#                                                            : "firstParty"
-#     read straight from the environment and NOT gated by
-#     PROVIDER_MANAGED_BY_HOST. A stale USE_BEDROCK therefore forces the worker
-#     onto Bedrock (and a likely-expired token) → 403 on the first turn. This
-#     is the root cause of #18.
-#   * CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST tells Claude Code an embedding host
-#     (cmux, an IDE extension) manages provider routing and auth. The worker
-#     reaches that host through environment it already inherits (the host auth
-#     token lives in the env var named by CLAUDE_CODE_HOST_AUTH_ENV_VAR,
-#     default ANTHROPIC_AUTH_TOKEN). Blanket-clearing this flag severs
-#     host-brokered auth, which is the other half of #18.
-#   * CLAUDE_CODE_SSE_PORT is the controller's IDE (VSCode/JetBrains)
-#     integration socket — purely IDE discovery, never the auth channel. A
-#     headless worker has no IDE and must not auto-connect to the controller's,
-#     so it is always pinned empty.
-#
-# Fix — clear stale values, never force new ones. For each cluster var:
-#   * If it is NOT set in the controller's (this process's) environment, pin it
-#     empty in the worker. This is what kills a stale tmux-global value.
-#   * If it IS set here, leave it alone so it inherits through tmux's normal
-#     environment — together with the credentials that travel with it (the host
-#     auth token, AWS/Vertex creds, base URLs). We deliberately do NOT force the
-#     value via `-e`: forcing a provider selector or PROVIDER_MANAGED_BY_HOST on
-#     while its credentials fail to reach the worker would just trade one auth
-#     failure for another, and forwarding the secrets explicitly would put them
-#     on the tmux command line (ps-visible). Selector and credentials must move
-#     together or not at all. CLAUDE_CODE_SSE_PORT is the exception: it is
-#     always pinned empty (IDE-only, never an auth channel).
-#
-# Net effect matches the field-proven workaround for #18: stop force-clearing
-# PROVIDER_MANAGED_BY_HOST (let host-brokered auth inherit) while killing the
-# stale CLAUDE_CODE_USE_BEDROCK that was hijacking the provider.
-_PROVIDER_ENV_VARS=(
-  CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST
-  CLAUDE_CODE_USE_BEDROCK
-  CLAUDE_CODE_USE_VERTEX
-  CLAUDE_CODE_USE_FOUNDRY
-  CLAUDE_CODE_USE_ANTHROPIC_AWS
-  CLAUDE_CODE_USE_MANTLE
-)
-
-# Populate WORKER_ENV_ARGS (a caller-declared array) with the `-e VAR=...` pairs
-# to hand to `tmux new-session` / `tmux respawn-pane`. CLAUDE_CODE_SSE_PORT is
-# always pinned empty; each provider/auth var is pinned empty only when absent
-# from this process's environment, otherwise left to inherit.
-_build_worker_env_args() {
-  WORKER_ENV_ARGS=(-e "CLAUDE_CODE_SSE_PORT=")
-  local var val
-  for var in "${_PROVIDER_ENV_VARS[@]}"; do
-    # Leave a var to inherit only when this process has a NON-EMPTY value for it
-    # (matching Claude Code's own truthiness check, where empty == false). Empty
-    # or unset here means "the controller is not using this provider", so pin it
-    # empty to override any stale, non-empty tmux-global value.
-    val=$(printenv "$var" 2>/dev/null) || val=""
-    if [ -z "$val" ]; then
-      WORKER_ENV_ARGS+=(-e "${var}=")
-    fi
-  done
-}
 
 cmd_launch() {
   local tmux_name="${1:?Usage: launch <tmux-name> <cwd> [-- claude-args...]}"
@@ -753,7 +678,7 @@ EOF
   # Start tmux. Allow override of the claude binary via CSD_CLAUDE_BIN for tests.
   local claude_bin="${CSD_CLAUDE_BIN:-claude}"
   local WORKER_ENV_ARGS=()
-  _build_worker_env_args
+  harness_env_args
   tmux new-session -d -s "$tmux_name" -c "$working_dir" \
     "${WORKER_ENV_ARGS[@]}" \
     "$claude_bin" --session-id "$session_id" --plugin-dir "$plugin_dir" \
@@ -851,7 +776,7 @@ EOF
   # Start (or respawn) the worker with --resume instead of --session-id.
   local claude_bin="${CSD_CLAUDE_BIN:-claude}"
   local WORKER_ENV_ARGS=()
-  _build_worker_env_args
+  harness_env_args
   local mode
   if tmux has-session -t "$tmux_name" 2>/dev/null; then
     # A pane with this name already exists — e.g. restored by tmux-resurrect /
