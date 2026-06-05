@@ -57,3 +57,64 @@ harness_transcript_path() {
   local encoded="${cwd//\//-}"
   echo "$HOME/.claude/projects/${encoded}/${sid}.jsonl"
 }
+
+# Render the last turn of <transcript> as markdown. With --full, tool results
+# are shown complete; otherwise truncated to 5 lines.
+harness_parse_turn() {
+  local log_file="$1" full=false
+  [ "${2:-}" = "--full" ] && full=true
+  local last_prompt_line
+  last_prompt_line=$(grep -n '"type":"user"' "$log_file" \
+    | grep -v '"tool_result"' | grep -v '<local-command' | grep -v '<command-name>' \
+    | tail -1 | cut -d: -f1)
+  if [ -z "$last_prompt_line" ]; then
+    echo "No user prompt found in session log" >&2
+    return 1
+  fi
+  tail -n +"$last_prompt_line" "$log_file" \
+    | jq -r --argjson full "$full" '
+      select(.type == "assistant" or .type == "user") |
+      if .type == "user" then
+        if (.message.content | type) == "string" then
+          if (.message.content | test("^<(local-command|command-name)")) then empty
+          else "---\n\n**Prompt:** " + .message.content + "\n" end
+        else
+          .message.content[] | select(.type == "tool_result") |
+          if .is_error then
+            "**Tool Error:**\n```\n" + (.content // "(no output)") + "\n```\n"
+          else
+            if $full then
+              "**Result:**\n```\n" + (.content // "(no output)") + "\n```\n"
+            else
+              "**Result:**\n```\n" + ((.content // "(no output)") | split("\n") | if length > 5 then (.[0:5] | join("\n")) + "\n... (" + (length | tostring) + " lines total)" else join("\n") end) + "\n```\n"
+            end
+          end
+        end
+      elif .type == "assistant" then
+        .message.content[] |
+        if .type == "thinking" then "> **Thinking:** " + (.thinking | split("\n") | join("\n> ")) + "\n"
+        elif .type == "text" then .text + "\n"
+        elif .type == "tool_use" then "**Tool: " + .name + "**\n```json\n" + (.input | tostring) + "\n```\n"
+        else empty
+        end
+      else empty
+      end
+    ' 2>/dev/null
+}
+
+# Echo the count of assistant messages that contain a text block.
+harness_count_text() {
+  local log_file="$1"
+  [ -f "$log_file" ] || { echo 0; return; }
+  local r
+  r=$(grep '"type":"assistant"' "$log_file" \
+      | jq -s '[.[] | select(.message.content | (type == "array") and any(.type == "text"))] | length' 2>/dev/null) || r=0
+  echo "$r"
+}
+
+# Echo the text of the last assistant message that has a text block.
+harness_last_text() {
+  local log_file="$1"
+  grep '"type":"assistant"' "$log_file" \
+    | jq -rs 'map(select(.message.content | (type == "array") and any(.type == "text"))) | last | [.message.content[] | select(.type == "text") | .text] | join("\n")' 2>/dev/null
+}
