@@ -35,4 +35,22 @@ echo "$out2" | grep -qx "CLAUDE_CODE_USE_BEDROCK=" && fail "env set-bedrock" "sh
 tp=$( ( source "$SCR/_lib.sh"; _load_driver claude; HOME=/home/x harness_transcript_path SID /a/b ) )
 [ "$tp" = "/home/x/.claude/projects/-a-b/SID.jsonl" ] && pass "transcript_path formula" || fail "transcript_path" "got $tp"
 
+# After a launch, the meta records harness=claude (back-compat default).
+META_HOME=$(mktemp -d); mkdir -p "$META_HOME/.claude"; touch "$META_HOME/.claude/.claude-session-driver-consent"
+META_FAKE=$(mktemp); cat > "$META_FAKE" <<'B'
+#!/bin/bash
+SID=""; while [ $# -gt 0 ]; do case "$1" in --session-id) SID="$2"; shift 2;; *) shift;; esac; done
+mkdir -p /tmp/claude-workers
+echo "{\"ts\":\"x\",\"event\":\"session_start\",\"cwd\":\"$PWD\"}" > "/tmp/claude-workers/${SID}.events.jsonl"; exec sleep 30
+B
+chmod +x "$META_FAKE"
+META_TN="test-drivers-meta-$$"
+CSD_CLAUDE_BIN="$META_FAKE" HOME="$META_HOME" bash "$SCR/csd" launch "$META_TN" /tmp >/dev/null 2>&1 || true
+META=""
+for m in /tmp/claude-workers/*.meta; do [ -f "$m" ] || continue; [ "$(jq -r '.tmux_name' "$m" 2>/dev/null)" = "$META_TN" ] && META="$m" && break; done
+if [ -n "$META" ] && [ "$(jq -r '.harness' "$META")" = "claude" ]; then pass "meta records harness=claude"; else fail "meta harness" "got ${META:+$(jq -r '.harness' "$META" 2>/dev/null)}"; fi
+tmux kill-session -t "$META_TN" 2>/dev/null || true
+[ -n "$META" ] && { SID=$(basename "$META" .meta); rm -f "/tmp/claude-workers/$SID".* "/tmp/claude-workers/bin/$META_TN"; }
+rm -rf "$META_HOME" "$META_FAKE"
+
 echo "drivers: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

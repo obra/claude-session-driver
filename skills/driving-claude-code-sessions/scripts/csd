@@ -558,7 +558,12 @@ EOF
 
 
 cmd_launch() {
-  local tmux_name="${1:?Usage: launch <tmux-name> <cwd> [-- claude-args...]}"
+  local harness="claude"
+  while [ "${1:-}" = "--harness" ] || [[ "${1:-}" == --harness=* ]]; do
+    if [ "$1" = "--harness" ]; then harness="$2"; shift 2; else harness="${1#--harness=}"; shift; fi
+  done
+  _load_driver "$harness"
+  local tmux_name="${1:?Usage: launch [--harness <name>] <tmux-name> <cwd> [-- claude-args...]}"
   local working_dir="${2:?Usage: launch <tmux-name> <cwd> [-- claude-args...]}"
   shift 2
   # Skip a leading -- separator if present
@@ -606,8 +611,9 @@ EOF
     --arg session_id "$session_id" \
     --arg cwd "$working_dir" \
     --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --arg harness "$harness" \
     --argjson invocation "$invocation_json" \
-    '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, invocation: $invocation}' \
+    '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, harness: $harness, invocation: $invocation}' \
     > "$_CSD_WORKER_DIR/${session_id}.meta"
 
   # Collision check
@@ -655,7 +661,12 @@ EOF
 }
 
 cmd_adopt() {
-  local tmux_name="${1:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
+  local harness="claude"
+  while [ "${1:-}" = "--harness" ] || [[ "${1:-}" == --harness=* ]]; do
+    if [ "$1" = "--harness" ]; then harness="$2"; shift 2; else harness="${1#--harness=}"; shift; fi
+  done
+  _load_driver "$harness"
+  local tmux_name="${1:?Usage: adopt [--harness <name>] <tmux-name> <cwd> <session-id> [-- claude-args...]}"
   local working_dir="${2:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
   local session_id="${3:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
   shift 3
@@ -710,8 +721,9 @@ EOF
     --arg session_id "$session_id" \
     --arg cwd "$working_dir" \
     --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --arg harness "$harness" \
     --argjson invocation "$invocation_json" \
-    '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, invocation: $invocation}' \
+    '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, harness: $harness, invocation: $invocation}' \
     > "$_CSD_WORKER_DIR/${session_id}.meta"
 
   # Build the harness resume argv (per-harness flags), then start/respawn tmux.
