@@ -272,3 +272,55 @@ carries `{name, arguments}` (full tool input) and the `toolResult` carries
 message:{role, content:[{type}], stopReason, usage?}}`; roles `user` /
 `assistant` / `toolResult`; content types `text` / `toolCall`. This is the
 empirical basis for the record→event map above.
+
+## Appendix B — Derive-id identity flow (validated end-to-end against real codex 0.134)
+
+`assign` (Claude) and `derive` (Codex, Pi) differ only in **when and by whom the
+worker's `<sid>.meta` and `<sid>.events.jsonl` are created**. Everything
+downstream (`resolve_session`, `wait-for-turn`, `status`, `read-events`,
+`converse`'s turn-diff) is **identical** once those files exist.
+
+- **assign (Claude):** the caller picks the id; `cmd_launch` pre-writes
+  `<sid>.meta` and the worker emits `session_start` at boot. Unchanged from Phase 1.
+- **derive (Codex/Pi):** the harness mints its own id. The worker's control-plane
+  producer (Codex's hook / Pi's poller) **self-registers** `<sid>.meta` (carrying
+  `tmux_name`, `session_id`, `cwd`, `transcript_path`, `harness`) and appends to
+  `<sid>.events.jsonl` — keyed by the same `<sid>`. No formula is used for the
+  transcript path; it is read from the self-registered meta.
+
+**Codex launch sequence (proven by the e2e prototype):**
+1. Create per-worker `CODEX_HOME=$_CSD_WORKER_DIR/homes/<tmux_name>`; stage the
+   operator's `~/.codex/auth.json` into it (subscription).
+2. Write `config.toml`: `model`, `[projects."<cwd>"] trust_level="trusted"`, and
+   `[[hooks.<Event>]]` for SessionStart/UserPromptSubmit/PreToolUse/Stop/SessionEnd,
+   each `command = "<plugin>/hooks/emit-event-codex <tmux_name> <cwd> <worker_dir>"`.
+3. Launch interactive `codex --dangerously-bypass-approvals-and-sandbox
+   --dangerously-bypass-hook-trust -C <cwd>` in tmux with `CODEX_HOME` set.
+4. **Dismiss the trust gate:** poll the pane for "Hooks need review"/trust; send
+   `2` + Enter if present (the bypass flag does NOT auto-skip it). Bounded.
+5. **Readiness is NOT `session_start`** — that fires at the first prompt, not boot.
+   Treat the worker ready once the pane shows the composer (or a short settle).
+6. Write the shim and return. No meta yet — the hook self-registers it on the
+   first prompt.
+
+**`emit-event-codex` (self-registering hook, validated):** reads the hook JSON on
+stdin; on first event creates `<sid>.meta` from the payload's `session_id` +
+`transcript_path` (plus the baked `tmux_name`/`cwd`); maps the event name
+(Codex's names equal Claude's) and appends the normalized record to
+`<sid>.events.jsonl`. Note `tool_name` in hook payloads is normalized (`"Bash"`)
+vs the rollout's `"exec_command"`.
+
+**The one new spine behavior — the pre-registration window.** Between launch and
+the first prompt, no `<sid>.meta` exists, so `resolve_session(worker)` cannot find
+a `session_id`. The first `send`/`converse` must therefore: (a) send keys to the
+tmux session by **`tmux_name`** (always known — the shim sets `--worker
+<tmux_name>`), not via a resolved sid; then (b) poll for self-registration (a meta
+whose `tmux_name` matches) to learn the `session_id`; then (c) proceed exactly as
+today (wait for `stop` in `<sid>.events.jsonl`, render the rollout). The prototype
+showed `session_start`/`user_prompt_submit` self-register within ~1s of the
+submit, so this window is short.
+
+**Codex turn parser** consumes the rollout `response_item` records
+(`payload.type` ∈ message / reasoning / function_call / function_call_output) and
+`event_msg` (agent_message / task_complete); render to the same markdown shape as
+`harness_parse_turn` for Claude.
