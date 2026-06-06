@@ -57,4 +57,13 @@ ct=$( ( source "$SCR/_lib.sh"; _load_driver pi; harness_count_text "$SF2" ) )
 [ "$ct" = "1" ] && pass "pi count_text" || fail "count" "got: $ct"
 rm -rf "$HOME_DIR" "$CWD" "$SF2"
 
+# --- csd poll subcommand self-registers (self-exits vs a missing tmux) ---
+SD3=$(mktemp -d); WD3=$(mktemp -d)
+SID3="019e0000-0000-7000-8000-0000000000bb"
+printf '{"type":"session","version":3,"id":"%s","cwd":"/w"}\n' "$SID3" > "$SD3/x_${SID3}.jsonl"
+printf '{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Z"}]}}\n' >> "$SD3/x_${SID3}.jsonl"
+bash "$SCR/csd" poll pi "$SD3" "$WD3" "no-tmux-$$" >/dev/null 2>&1 || true
+[ -f "$WD3/$SID3.meta" ] && pass "csd poll self-registers" || fail "csd poll" "no meta"
+rm -rf "$SD3" "$WD3"
+
 echo "pi-driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

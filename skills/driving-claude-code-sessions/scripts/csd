@@ -906,6 +906,17 @@ cmd_list() {
 
 # --- main: arg parsing, validation, dispatch ---
 
+# Internal subcommand: `csd poll <harness> <session_dir> <worker_dir> <tmux_name>`
+# runs the harness's transcript tailer (the control-plane producer for poll
+# harnesses like pi). The spine starts this in a tmux window; not user-facing.
+if [ "${1:-}" = "poll" ]; then
+  shift
+  _phar="${1:?Usage: csd poll <harness> <session_dir> <worker_dir> <tmux_name>}"; shift
+  _load_driver "$_phar"
+  harness_poll "$@"
+  exit $?
+fi
+
 # Parse --worker (top-level flag, before subcommand)
 WORKER=""
 while [ $# -gt 0 ]; do
