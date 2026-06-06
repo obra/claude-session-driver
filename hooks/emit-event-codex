@@ -1,0 +1,54 @@
+#!/bin/bash
+set -euo pipefail
+# Codex lifecycle hook for csd. Self-registers the worker meta and appends
+# normalized events to <sid>.events.jsonl. Args (baked into the per-worker
+# CODEX_HOME config.toml hook command): <tmux_name> <cwd> <worker_dir>.
+#
+# Codex mints its own session id; this hook learns it (and the rollout path)
+# from the SessionStart payload and creates <sid>.meta on first sight, so the
+# controller can resolve the worker by tmux_name once the first prompt fires.
+
+TN="${1:-}"; CWD="${2:-}"; WD="${3:-}"
+[ -z "$WD" ] && exit 0
+
+# Read all of stdin with a bounded timeout (-r so escaped JSON survives; see
+# hooks/emit-event for the #9 timeout / #15 Stop-exit rationale).
+INPUT=""
+IFS= read -t 5 -d '' -r INPUT || true
+[ -z "$INPUT" ] && exit 0
+printf '%s' "$INPUT" | jq -e . >/dev/null 2>&1 || exit 0
+
+SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
+[ -z "$SID" ] && exit 0
+EV=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty')
+TP=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty')
+
+mkdir -p "$WD"
+
+# Self-register the worker meta on first event.
+if [ ! -f "$WD/$SID.meta" ]; then
+  jq -n --arg tn "$TN" --arg sid "$SID" --arg cwd "$CWD" --arg tp "$TP" \
+    '{tmux_name:$tn, session_id:$sid, cwd:$cwd, transcript_path:$tp, harness:"codex"}' \
+    > "$WD/$SID.meta"
+fi
+
+case "$EV" in
+  SessionStart)     e=session_start ;;
+  UserPromptSubmit) e=user_prompt_submit ;;
+  PreToolUse)       e=pre_tool_use ;;
+  PostToolUse)      e=post_tool_use ;;
+  Stop)             e=stop ;;
+  SessionEnd)       e=session_end ;;
+  *)                e=$(echo "$EV" | sed 's/\([A-Z]\)/_\L\1/g; s/^_//') ;;
+esac
+
+ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+if [ "$e" = pre_tool_use ]; then
+  tool=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""')
+  ti=$(printf '%s' "$INPUT" | jq -c '.tool_input // {}')
+  jq -cn --arg ts "$ts" --arg event "$e" --arg tool "$tool" --argjson ti "$ti" \
+    '{ts:$ts, event:$event, tool:$tool, tool_input:$ti}' >> "$WD/$SID.events.jsonl"
+else
+  jq -cn --arg ts "$ts" --arg event "$e" '{ts:$ts, event:$event}' >> "$WD/$SID.events.jsonl"
+fi
+exit 0
