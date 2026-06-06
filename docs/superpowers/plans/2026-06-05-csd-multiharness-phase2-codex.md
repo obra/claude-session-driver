@@ -613,3 +613,58 @@ git commit -m "test(csd): gated real-codex end-to-end smoke (PRI-2096)"
 - The fake fires hooks at boot (not on a prompt); the real flow fires at first prompt. The integration test therefore can't exercise the `send`-triggered registration timing — Task 7 (real) covers that. Flag if a fake that fires on a sent prompt is worth the extra complexity.
 - Codex `harness_env_args` REPLACES the Claude provider-env pinning for codex workers (different isolation lever) — confirm that's intended (it is: CODEX_HOME is codex's isolation, not the CLAUDE_CODE_* vars).
 - `harness_await_ready` greps the pane for `›` — brittle if the codex TUI glyph differs by version; it's best-effort (the first send re-confirms), but note it.
+
+---
+
+## Revisions from Riker's review (verified in bash 3.2; fold into the tasks above)
+
+**B1 (blocking) — the dispatcher gate kills the derive window.** `csd:878`
+`_wsid=$(resolve_session "$WORKER") || exit 1` runs *before* `cmd_send`, so a
+pre-registration derive worker `exit 1`s before it can self-register. Fix in two
+places:
+- **Task 4 / `cmd_launch`** (all harnesses): right after the `mkdir -p
+  "$_CSD_WORKER_DIR" …`, drop a sidecar marker: `printf '%s' "$harness" >
+  "$_CSD_WORKER_DIR/${tmux_name}.harness"`.
+- **The dispatcher block** (csd ~877) becomes:
+```bash
+if is_in "$SUB" "${PER_WORKER_SUBS[@]}"; then
+  _wsid=$(resolve_session "$WORKER" 2>/dev/null) || _wsid=""
+  if [ -n "$_wsid" ] && [ -f "$_CSD_WORKER_DIR/${_wsid}.meta" ]; then
+    _whar=$(jq -r '.harness // "claude"' "$_CSD_WORKER_DIR/${_wsid}.meta" 2>/dev/null)
+  elif [ -f "$_CSD_WORKER_DIR/${WORKER}.harness" ]; then
+    _whar=$(cat "$_CSD_WORKER_DIR/${WORKER}.harness")   # derive pre-registration window
+  else
+    echo "Error: no worker known as '$WORKER'" >&2; exit 1
+  fi
+  _load_driver "${_whar:-claude}"
+elif [ "$SUB" = "launch" ] || [ "$SUB" = "adopt" ]; then
+  _load_driver "${HARNESS:-claude}"
+fi
+```
+- **`cmd_stop`** cleanup: add `rm -f "$_CSD_WORKER_DIR/${tmux_name}.harness"` and
+  `rm -rf "$_CSD_WORKER_DIR/homes/${tmux_name}"`.
+
+**B2 (blocking) — `emit-event-codex` must read with `-r`.** Change `IFS= read -t 5
+-d '' INPUT` → `IFS= read -t 5 -d '' -r INPUT` (matches `hooks/emit-event:25`;
+without it, escaped JSON in `tool_input` is mangled → silent bail). Add a Task-2
+test payload with `\"` and `\n` inside `tool_input`.
+
+**B3 (blocking) — `set -u` abort + adopt scope.** codex `harness_env_args`:
+`WORKER_ENV_ARGS=(-e "CODEX_HOME=${_CSD_CURRENT_WORKER_HOME:-}")`. And `cmd_adopt`
+is assign-only — after its `--harness` parse + `_load_driver`, add:
+`[ "$(harness_id_strategy)" = assign ] || { echo "Error: adopt supports only
+assign-id harnesses (claude)" >&2; return 1; }`.
+
+**B4 (blocking) — `grep -c` double-zero.** codex `harness_count_text`:
+`local c; c=$(grep -c '"agent_message"' "$rollout" 2>/dev/null) || c=0; echo "$c"`
+(the `… || echo 0` form prints `0\n0` on no-match and breaks `-gt`).
+
+**N1 — map `PostToolUse` explicitly** in the `emit-event-codex` case
+(`PostToolUse) e=post_tool_use ;;`) so the GNU-only `\L` sed fallback never fires
+(BSD/macOS sed emits a literal `L`).
+
+**N4 — gate the collision-check `rm`** in `cmd_launch` on `[ -n "$session_id" ]`
+(empty sid for derive otherwise `rm -f …/.meta`).
+
+**N5 — `cmd_converse` derive path:** set `after_line=0` and `before_count=0`
+before `wait_for_turn` (the events file is brand-new at registration).
