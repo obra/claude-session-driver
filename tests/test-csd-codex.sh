@@ -45,4 +45,23 @@ ct=$( ( source "$SCR/_lib.sh"; _load_driver codex; harness_count_text "$ROLL" ) 
 [ "$ct" = "0" ] && pass "count_text single 0 on no agent_message" || fail "count" "got: [$ct]"
 
 rm -rf "$HOME_DIR" "$CWD" "$ROLL"
+
+# --- integration: fake-codex launch -> self-register -> read-turn -> status ---
+FAKE="$SCRIPT_DIR/fixtures/fake-codex"; chmod +x "$FAKE" 2>/dev/null || true
+IHOME=$(mktemp -d); mkdir -p "$IHOME/.claude"; touch "$IHOME/.claude/.claude-session-driver-consent"
+IWDIR=$(mktemp -d); ITN="test-codex-$$"; IWD=$(mktemp -d)
+run_csd(){ CSD_WORKER_DIR="$IWDIR" CSD_CODEX_BIN="$FAKE" HOME="$IHOME" bash "$SCR/csd" "$@"; }
+run_csd launch --harness codex "$ITN" "$IWD" >/dev/null 2>&1 || true
+sleep 1
+OUT=$(run_csd --worker "$ITN" read-turn 2>/dev/null || true)
+echo "$OUT" | grep -q "FAKE_DONE" && pass "codex read-turn renders the turn" || fail "codex read-turn" "got: $OUT"
+ST=$(run_csd --worker "$ITN" status 2>/dev/null || true)
+[ "$ST" = "idle" ] && pass "codex status idle after stop event" || fail "codex status" "got: $ST"
+# meta self-registered with harness=codex
+M=$(ls "$IWDIR"/*.meta 2>/dev/null | head -1)
+[ -n "$M" ] && [ "$(jq -r '.harness' "$M")" = "codex" ] && pass "codex meta self-registered" || fail "codex meta" "missing/wrong"
+run_csd --worker "$ITN" stop >/dev/null 2>&1 || true
+tmux kill-session -t "$ITN" 2>/dev/null || true
+rm -rf "$IHOME" "$IWD" "$IWDIR"
+
 echo "codex-driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

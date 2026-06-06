@@ -88,8 +88,10 @@ harness_transcript_path() {
 harness_parse_turn() {
   local rollout="$1"
   [ -f "$rollout" ] || { echo "No rollout at $rollout" >&2; return 1; }
-  local start
-  start=$(grep -n '"type":"response_item"' "$rollout" | grep '"role":"user"' | tail -1 | cut -d: -f1)
+  # Find the last user message line. The grep pipeline can legitimately match
+  # nothing (e.g. a tool-only turn); guard against set -e/pipefail aborting here.
+  local start=""
+  start=$(grep -n '"type":"response_item"' "$rollout" | grep '"role":"user"' | tail -1 | cut -d: -f1) || start=""
   [ -z "$start" ] && start=1
   tail -n +"$start" "$rollout" | jq -r '
     select(.type=="response_item") | .payload as $p |

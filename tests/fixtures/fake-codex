@@ -1,0 +1,33 @@
+#!/bin/bash
+# Fake codex for csd tests. Mimics the parts csd drives:
+#  - parses -C <cwd>
+#  - reads $CODEX_HOME/config.toml for the emit-event-codex hook command
+#  - mints a session id + writes a minimal rollout
+#  - fires the lifecycle hooks with synthetic payloads so emit-event-codex
+#    self-registers <sid>.meta + <sid>.events.jsonl
+#  - prints the trust-gate text (so harness_post_launch's dismissal fires fast)
+#    and the composer glyph (so harness_await_ready returns fast), then stays alive.
+cwd="."
+while [ $# -gt 0 ]; do case "$1" in -C) cwd="$2"; shift 2 ;; *) shift ;; esac; done
+
+echo "Hooks need review (fake-codex)"   # fast-path harness_post_launch
+
+SID="019efake-0000-7000-8000-$(printf '%012d' "$$")"
+DAY=$(date -u +%Y/%m/%d)
+ROLL="$CODEX_HOME/sessions/$DAY/rollout-$(date -u +%Y-%m-%dT%H-%M-%S)-$SID.jsonl"
+mkdir -p "$(dirname "$ROLL")"
+printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s"}}\n' "$SID" "$cwd" > "$ROLL"
+
+HOOKCMD=$(grep -m1 'emit-event-codex' "$CODEX_HOME/config.toml" | sed 's/^command = "//; s/"$//')
+fire(){ printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s"%s}' \
+  "$SID" "$ROLL" "$cwd" "$1" "${2:-}" | $HOOKCMD; }
+
+fire SessionStart
+fire UserPromptSubmit ',"prompt":"hi"'
+fire PreToolUse ',"tool_name":"Bash"'
+printf '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"FAKE_DONE"}]}}\n' >> "$ROLL"
+printf '{"type":"event_msg","payload":{"type":"agent_message","message":"FAKE_DONE"}}\n' >> "$ROLL"
+fire Stop
+
+printf '\xe2\x80\xba\n'   # codex composer glyph, so harness_await_ready returns fast
+exec sleep 60
