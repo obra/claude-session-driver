@@ -23,15 +23,17 @@ echo "[smoke] launching real codex worker $TN in $WD ..."
 SHIM=$("$CSD" launch --harness codex "$TN" "$WD")
 echo "[smoke] shim: $SHIM"
 
-echo "[smoke] conversing (real turn) ..."
-OUT=$("$CSD" --worker "$TN" converse "Run the bash command: echo SMOKE_OK_CODEX . Then reply with exactly the word DONE." 240)
-echo "[smoke] === converse response ==="
-echo "$OUT"
+echo "[smoke] turn 1 ..."
+OUT1=$("$CSD" --worker "$TN" converse "Reply with exactly the word ALPHA and nothing else." 240)
+echo "[smoke] turn 1 response: $OUT1"
+echo "[smoke] turn 2 (multi-turn — must NOT return turn 1's answer) ..."
+OUT2=$("$CSD" --worker "$TN" converse "Reply with exactly the word BRAVO and nothing else." 240)
+echo "[smoke] turn 2 response: $OUT2"
 echo "[smoke] === read-turn ==="
 "$CSD" --worker "$TN" read-turn || true
 
-if echo "$OUT" | grep -qiE 'done|smoke_ok'; then
-  echo "[smoke] PASS — real Codex worker drove a turn through csd"
+if echo "$OUT1" | grep -qi 'alpha' && echo "$OUT2" | grep -qi 'bravo' && ! echo "$OUT2" | grep -qi 'alpha'; then
+  echo "[smoke] PASS — real Codex multi-turn conversation through csd (turn 2 != stale turn 1)"
 else
-  echo "[smoke] FAIL — unexpected response"; exit 1
+  echo "[smoke] FAIL — turn1='$OUT1' turn2='$OUT2'"; exit 1
 fi
