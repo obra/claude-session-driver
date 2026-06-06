@@ -632,7 +632,7 @@ EOF
   # Build the harness launch argv (per-harness flags), then start tmux.
   local launch_argv=()
   while IFS= read -r _tok; do launch_argv+=("$_tok"); done \
-    < <(harness_launch_argv launch "$session_id" "$plugin_dir")
+    < <(harness_launch_argv launch "$session_id" "$working_dir" "$plugin_dir" "")
   local WORKER_ENV_ARGS=()
   harness_env_args
   tmux new-session -d -s "$tmux_name" -c "$working_dir" \
@@ -741,7 +741,7 @@ EOF
   # Build the harness resume argv (per-harness flags), then start/respawn tmux.
   local launch_argv=()
   while IFS= read -r _tok; do launch_argv+=("$_tok"); done \
-    < <(harness_launch_argv resume "$session_id" "$plugin_dir")
+    < <(harness_launch_argv resume "$session_id" "$working_dir" "$plugin_dir" "")
   local WORKER_ENV_ARGS=()
   harness_env_args
   local mode

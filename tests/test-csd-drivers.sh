@@ -15,13 +15,13 @@ probe() { ( source "$SCR/_lib.sh"; _load_driver claude; "$@" ); }
 [ "$(CSD_CLAUDE_BIN=/x/claude probe harness_bin)" = "/x/claude" ] && pass "bin honors CSD_CLAUDE_BIN" || fail "bin override" "wrong"
 if ( source "$SCR/_lib.sh"; _load_driver nope ) 2>/dev/null; then fail "unknown driver" "should fail"; else pass "unknown driver errors"; fi
 
-argv_launch=$( ( source "$SCR/_lib.sh"; _load_driver claude; harness_launch_argv launch SID123 /plug ) )
+argv_launch=$( ( source "$SCR/_lib.sh"; _load_driver claude; harness_launch_argv launch SID123 /cwd /plug /home ) )
 [ "$(echo "$argv_launch" | head -1)" = "claude" ] && pass "launch argv starts with bin" || fail "launch argv bin" "wrong"
 echo "$argv_launch" | grep -qx -- "--session-id" && echo "$argv_launch" | grep -qx "SID123" && pass "launch uses --session-id" || fail "launch sid" "wrong"
 echo "$argv_launch" | grep -qx -- "--dangerously-skip-permissions" && pass "launch bypass flag" || fail "bypass" "wrong"
 echo "$argv_launch" | grep -qx "AskUserQuestion" && pass "launch disallows AskUserQuestion" || fail "disallow" "wrong"
 echo "$argv_launch" | grep -qFx '{"skipDangerousModePermissionPrompt":true}' && pass "settings is one token" || fail "settings token" "split"
-argv_resume=$( ( source "$SCR/_lib.sh"; _load_driver claude; harness_launch_argv resume SID123 /plug ) )
+argv_resume=$( ( source "$SCR/_lib.sh"; _load_driver claude; harness_launch_argv resume SID123 /cwd /plug /home ) )
 echo "$argv_resume" | grep -qx -- "--resume" && pass "resume uses --resume" || fail "resume" "wrong"
 echo "$argv_resume" | grep -qx -- "--session-id" && fail "resume sid" "should not use --session-id" || pass "resume omits --session-id"
 

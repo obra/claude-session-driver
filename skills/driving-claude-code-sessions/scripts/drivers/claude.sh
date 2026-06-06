@@ -38,7 +38,7 @@ harness_env_args() {
 #   launch -> --session-id <sid>;  resume -> --resume <sid>
 # The spine wraps this with tmux + env args + any user extra-args.
 harness_launch_argv() {
-  local mode="$1" sid="$2" plugin_dir="$3"
+  local mode="$1" sid="$2" plugin_dir="$4"
   local bin idflag
   bin=$(harness_bin)
   idflag="--session-id"
@@ -49,6 +49,13 @@ harness_launch_argv() {
     --dangerously-skip-permissions \
     --disallowed-tools AskUserQuestion
 }
+
+# Claude needs no per-worker prep, no post-launch gate dismissal. Claude
+# readiness is session_start (the spine calls _await_session_start directly on
+# the assign path); these slots exist for the derive path's launch sequence.
+harness_prepare()     { :; }
+harness_post_launch() { :; }
+harness_await_ready() { :; }
 
 # Echo the transcript path for <sid> in <cwd> (cwd resolved to absolute first).
 harness_transcript_path() {
