@@ -468,6 +468,8 @@ cmd_stop() {
   rm -f "$_CSD_WORKER_DIR/${sid}.events.jsonl"
   rm -f "$_CSD_WORKER_DIR/${sid}.meta"
   rm -f "$_CSD_WORKER_DIR/bin/${tmux_name}"
+  rm -f "$_CSD_WORKER_DIR/${tmux_name}.harness"
+  rm -rf "$_CSD_WORKER_DIR/homes/${tmux_name}"
 
   echo "Worker $tmux_name ($sid) stopped. Shim removed."
 }
@@ -597,9 +599,14 @@ EOF
     return 1
   fi
 
-  # Generate session ID
-  local session_id
-  session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  export CSD_PLUGIN_DIR="$plugin_dir"
+  local worker_home="$_CSD_WORKER_DIR/homes/$tmux_name"
+  _CSD_CURRENT_WORKER_HOME="$worker_home"
+
+  # Generate the session id only for assign-id harnesses; derive harnesses learn
+  # it from their first lifecycle event (the producer self-registers the meta).
+  local session_id=""
+  [ "$(harness_id_strategy)" = "assign" ] && session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
   mkdir -p $_CSD_WORKER_DIR $_CSD_WORKER_DIR/bin
   # Best-effort back-compat: only symlink the legacy path when it doesn't already
@@ -609,30 +616,41 @@ EOF
     ln -s /tmp/csd-workers /tmp/claude-workers 2>/dev/null || true
   fi
 
-  # Write meta (includes cwd and invocation for reproduce)
+  # Sidecar harness marker so per-worker commands can load the right driver during
+  # the derive pre-registration window (before the producer self-registers meta).
+  printf '%s' "$harness" > "$_CSD_WORKER_DIR/${tmux_name}.harness"
+
+  # assign: pre-write the meta keyed by the chosen session id. derive: the
+  # control-plane producer self-registers it on the first prompt.
   local invocation_json
   invocation_json=$(printf '%s\n' "${original_argv[@]}" | jq -R . | jq -s .)
-  jq -n \
-    --arg tmux_name "$tmux_name" \
-    --arg session_id "$session_id" \
-    --arg cwd "$working_dir" \
-    --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-    --arg harness "$harness" \
-    --argjson invocation "$invocation_json" \
-    '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, harness: $harness, invocation: $invocation}' \
-    > "$_CSD_WORKER_DIR/${session_id}.meta"
+  if [ "$(harness_id_strategy)" = "assign" ]; then
+    jq -n \
+      --arg tmux_name "$tmux_name" \
+      --arg session_id "$session_id" \
+      --arg cwd "$working_dir" \
+      --arg started_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+      --arg harness "$harness" \
+      --argjson invocation "$invocation_json" \
+      '{tmux_name: $tmux_name, session_id: $session_id, cwd: $cwd, started_at: $started_at, harness: $harness, invocation: $invocation}' \
+      > "$_CSD_WORKER_DIR/${session_id}.meta"
+  fi
 
   # Collision check
   if tmux has-session -t "$tmux_name" 2>/dev/null; then
     echo "Error: tmux session '$tmux_name' already exists" >&2
-    rm -f "$_CSD_WORKER_DIR/${session_id}.meta"
+    [ -n "$session_id" ] && rm -f "$_CSD_WORKER_DIR/${session_id}.meta"
+    rm -f "$_CSD_WORKER_DIR/${tmux_name}.harness"
     return 1
   fi
+
+  # Per-worker harness setup (codex: CODEX_HOME config + staged auth; claude: no-op).
+  harness_prepare "$tmux_name" "$working_dir" "$worker_home"
 
   # Build the harness launch argv (per-harness flags), then start tmux.
   local launch_argv=()
   while IFS= read -r _tok; do launch_argv+=("$_tok"); done \
-    < <(harness_launch_argv launch "$session_id" "$working_dir" "$plugin_dir" "")
+    < <(harness_launch_argv launch "$session_id" "$working_dir" "$plugin_dir" "$worker_home")
   local WORKER_ENV_ARGS=()
   harness_env_args
   tmux new-session -d -s "$tmux_name" -c "$working_dir" \
@@ -640,10 +658,14 @@ EOF
     "${launch_argv[@]}" \
     "${extra_args[@]+"${extra_args[@]}"}"
 
-  # Accept any trust dialog and block until the worker emits session_start.
-  _await_session_start "$tmux_name" "$session_id" || return 1
+  # Post-launch gate dismissal (codex: trust menu); then become ready.
+  harness_post_launch "$tmux_name"
+  if [ "$(harness_id_strategy)" = "assign" ]; then
+    _await_session_start "$tmux_name" "$session_id" || return 1
+  else
+    harness_await_ready "$tmux_name" ""
+  fi
 
-  local event_file="$_CSD_WORKER_DIR/${session_id}.events.jsonl"
   local shim_path
   shim_path="$(_write_worker_shim "$tmux_name")"
 
@@ -659,9 +681,13 @@ EOF
   {
     echo "Worker launched."
     echo "  tmux:       $tmux_name"
-    echo "  session_id: $session_id"
+    echo "  session_id: ${session_id:-(derive — assigned on first prompt)}"
     echo "  cwd:        $working_dir"
-    echo "  events:     $event_file"
+    if [ -n "$session_id" ]; then
+      echo "  events:     $_CSD_WORKER_DIR/${session_id}.events.jsonl"
+    else
+      echo "  events:     (registered on first prompt)"
+    fi
     echo "  reproduce: $(printf '%q' "$CSD_PATH") launch${reproduce_args}"
   } >&2
 }
@@ -672,6 +698,10 @@ cmd_adopt() {
     if [ "$1" = "--harness" ]; then harness="$2"; shift 2; else harness="${1#--harness=}"; shift; fi
   done
   _load_driver "$harness"
+  if [ "$(harness_id_strategy)" != "assign" ]; then
+    echo "Error: adopt supports only assign-id harnesses (claude); got '$harness'" >&2
+    return 1
+  fi
   local tmux_name="${1:?Usage: adopt [--harness <name>] <tmux-name> <cwd> <session-id> [-- claude-args...]}"
   local working_dir="${2:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
   local session_id="${3:?Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]}"
@@ -875,8 +905,15 @@ shift  # consume the subcommand name
 # from the worker meta (default claude); launch/adopt default to claude here
 # (the --harness flag + per-command override is added in a later task).
 if is_in "$SUB" "${PER_WORKER_SUBS[@]}"; then
-  _wsid=$(resolve_session "$WORKER") || exit 1
-  _whar=$(jq -r '.harness // "claude"' "$_CSD_WORKER_DIR/${_wsid}.meta" 2>/dev/null)
+  _wsid=$(resolve_session "$WORKER" 2>/dev/null) || _wsid=""
+  if [ -n "$_wsid" ] && [ -f "$_CSD_WORKER_DIR/${_wsid}.meta" ]; then
+    _whar=$(jq -r '.harness // "claude"' "$_CSD_WORKER_DIR/${_wsid}.meta" 2>/dev/null)
+  elif [ -f "$_CSD_WORKER_DIR/${WORKER}.harness" ]; then
+    # derive pre-registration window: meta not self-registered yet.
+    _whar=$(cat "$_CSD_WORKER_DIR/${WORKER}.harness")
+  else
+    echo "Error: no worker known as '$WORKER'" >&2; exit 1
+  fi
   _load_driver "${_whar:-claude}"
 elif [ "$SUB" = "launch" ] || [ "$SUB" = "adopt" ]; then
   _load_driver claude
