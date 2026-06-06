@@ -1,16 +1,30 @@
 # claude-session-driver
 
-Turn one Claude Code session into a project manager that delegates tasks to other Claude Code sessions.
+Turn one coding-agent session into a project manager that delegates tasks to other sessions — Claude Code, Codex, or Pi.
 
 ## Why
 
-A single Claude session works on one task at a time. With this plugin, a controller session launches worker sessions in tmux, assigns each a task, monitors their progress, and collects results. Workers run in parallel. The controller decides what to do with their output.
+A single coding-agent session works on one task at a time. With this plugin, a controller session launches worker sessions in tmux, assigns each a task, monitors their progress, and collects results. Workers run in parallel. The controller decides what to do with their output.
 
 ## How It Works
 
-Workers run with `--dangerously-skip-permissions` and execute tool calls without prompting. The plugin's hooks write lifecycle events to a JSONL file — session start, prompt submitted, each tool call (with name and input), stop, and session end — so a controller can watch what each worker is doing. The events are observation-only; the plugin does not gate tool calls.
+Workers run with permissions bypassed and execute tool calls without prompting. Each worker emits lifecycle events to a JSONL file — session start, prompt submitted, each tool call (with name and input), stop, and session end — so a controller can watch what each worker is doing. The events are observation-only; nothing gates the tool calls.
+
+Claude and Codex emit those events through their own hook systems. Pi has none, so `csd` tails its transcript and synthesizes the same stream. The controller drives every worker the same way and never learns which harness is inside the pane.
 
 The controller orchestrates workers through a single CLI (`csd`) that manages tmux sessions, polls events, reads conversation logs, and cleans up.
+
+## Harnesses
+
+`csd` drives three harnesses. Pass `--harness` at launch; it defaults to `claude`.
+
+| `--harness` | CLI | Auth |
+|------------|------|------|
+| `claude` (default) | `claude` | your `~/.claude` login |
+| `codex` | `codex` | your `~/.codex` login |
+| `pi` | `pi` | your `~/.pi/agent` login |
+
+The controller surface is identical for all three — `converse`, `read-turn`, `stop`, and the rest behave the same regardless of what's in the pane. One difference leaks through: Claude takes a caller-assigned session id, while Codex and Pi mint their own on the first prompt. So `adopt` (resume a session by id) is Claude-only; relaunch a Codex or Pi worker instead.
 
 ## Installation
 
@@ -24,7 +38,7 @@ If your marketplace cache predates this plugin, update it first:
 claude plugin marketplace update superpowers-marketplace
 ```
 
-Requires **tmux**, **jq**, and the **claude** CLI.
+Requires **tmux** and **jq**, plus at least one harness CLI — **claude**, **codex**, or **pi**.
 
 ## Usage
 
@@ -46,7 +60,7 @@ All operations go through a single binary at `skills/driving-claude-code-session
 
 | Subcommand | Purpose |
 |------------|---------|
-| `csd launch <name> <cwd> [-- claude-args...]` | Bootstrap a worker; prints a shim path to stdout |
+| `csd launch [--harness <h>] <name> <cwd> [-- harness-args...]` | Bootstrap a worker (harness defaults to `claude`); prints a shim path to stdout |
 | `csd list [--all]` | List active (or all) workers |
 | `csd grant-consent` | One-time consent flow (required before first launch) |
 

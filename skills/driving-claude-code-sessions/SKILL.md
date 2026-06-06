@@ -1,32 +1,46 @@
 ---
 name: driving-claude-code-sessions
-description: Use when acting as a project manager that delegates tasks to other Claude Code sessions - launch workers, assign them work, monitor progress, review their tool calls, and collect results
+description: Use when acting as a project manager that delegates tasks to other coding-agent sessions (Claude Code, Codex, or Pi) - launch workers, assign them work, monitor progress, review their tool calls, and collect results
 ---
 
-# Driving Claude Code Sessions
+# Driving Coding-Agent Sessions
 
 ## Overview
 
-You can launch other Claude Code sessions as "workers" in tmux, send them prompts, wait for them to finish, read their output, and hand them off to a human. Workers run with `--dangerously-skip-permissions`, so they execute tool calls without prompting. A plugin (claude-session-driver) emits lifecycle events to a JSONL file so the controller can observe what the worker is doing.
+You can launch coding-agent sessions — Claude Code, Codex, or Pi — as "workers" in tmux, send them prompts, wait for them to finish, read their output, and hand them off to a human. Workers run with permissions bypassed, so they execute tool calls without prompting. Each worker emits lifecycle events to a JSONL file so the controller can observe what it's doing — Claude and Codex through their hook systems, Pi through a tailer `csd` runs alongside it.
 
 All operations go through a single CLI: `csd`. After launching a worker, the controller receives a **shim path** at `/tmp/csd-workers/bin/<tmux-name>` that bakes in the worker handle. Every per-worker operation goes through that path — no positional state to thread between calls, no absolute skill path to prepend. A small set of environment variables tune behavior; see [Environment variables](#environment-variables) at the bottom.
 
 The shim path is deterministic: if you pick a memorable tmux name at launch, you can reconstruct `/tmp/csd-workers/bin/<tmux-name>` whenever you need it. For agents driving via tool calls, that's the right model — shell state doesn't persist between calls, so a `SHIM=...; $SHIM cmd` pattern just adds noise. The examples below use the bare path.
 
+## Harnesses
+
+Pick a harness with `--harness` at launch (default `claude`):
+
+```bash
+$SKILL/csd launch --harness codex my-task /path/to/project
+$SKILL/csd launch --harness pi    my-task /path/to/project
+```
+
+Everything after launch is identical across harnesses — `converse`, `read-turn`, `read-events`, `status`, `stop`, and `handoff` all behave the same. Two things differ:
+
+- **Auth.** Each harness authenticates from its own home — Claude `~/.claude`, Codex `~/.codex`, Pi `~/.pi/agent`. `csd` copies that login into the worker at launch, so to rotate credentials, relaunch.
+- **`adopt` is Claude-only.** Claude takes a caller-assigned session id, so a session can be resumed by id. Codex and Pi mint their own ids on the first prompt and offer no resume-by-id — relaunch them instead.
+
 ## Prerequisites
 
 - **tmux**
 - **jq**
-- **claude** CLI
+- a harness CLI — **claude** (default), **codex**, or **pi**
 
 ## Setup
 
 The CLI lives at `<skill>/scripts/csd`. Three top-level subcommands need the skill path:
 
-- `csd launch <tmux-name> <cwd> [-- claude-args...]` — bootstrap a worker
+- `csd launch [--harness <name>] <tmux-name> <cwd> [-- harness-args...]` — bootstrap a worker (harness defaults to `claude`)
 - `csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]` — re-adopt an existing Claude session as a worker (see [Recovering workers](#recovering-workers-after-a-reboot))
 - `csd list [--all]` — enumerate workers
-- `csd grant-consent` — one-time consent for `--dangerously-skip-permissions`
+- `csd grant-consent` — one-time consent to run workers with permissions bypassed
 
 Once a worker is launched, run subsequent commands against `/tmp/csd-workers/bin/<tmux-name>`:
 
@@ -52,15 +66,16 @@ $SKILL/csd launch my-task /path/to/project
 ```
 
 `csd launch`:
-- Writes a meta file and a 3-line shim at `/tmp/csd-workers/bin/my-task`
-- Starts tmux + claude with the plugin loaded
-- Waits up to 30s for `session_start`
+- Writes a 3-line shim at `/tmp/csd-workers/bin/my-task`
+- Starts tmux and the harness in it
+- Blocks until the worker is ready — Claude waits for `session_start`; Codex and Pi settle, then reconfirm on the first send
 - Prints the shim path on stdout (one line)
 - Prints a "Worker launched" panel on stderr — the `reproduce:` line is the exact command to relaunch with the same args
 
-Pass claude CLI args after a `--` separator:
+Pass harness CLI args after a `--` separator, or pick a non-default harness with `--harness`:
 ```bash
 $SKILL/csd launch my-task /path/to/project -- --model sonnet
+$SKILL/csd launch --harness codex my-task /path/to/project
 ```
 
 ### 2. Converse (the typical case)
@@ -113,7 +128,7 @@ Or pull events after the fact:
 /tmp/csd-workers/bin/my-task read-events --type pre_tool_use
 ```
 
-`--type` accepts one of: `session_start`, `user_prompt_submit`, `pre_tool_use`, `stop`, `session_end`. Unknown event names fail fast.
+`--type` accepts one of: `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `session_end`. Unknown event names fail fast. (`post_tool_use` comes from Codex and Pi workers, not Claude.)
 
 If you see something you don't want, stop the worker:
 
@@ -127,7 +142,7 @@ If you see something you don't want, stop the worker:
 /tmp/csd-workers/bin/my-task stop
 ```
 
-Sends `/exit`, waits up to 10s for `session_end`, kills the tmux session if still running, and removes the meta, events, **and shim** files.
+Sends the worker's quit command, waits up to 10s for `session_end`, kills the tmux session if still running, and removes the meta, events, **and shim** files.
 
 `stop` is destructive: the worker is gone and the shim path stops working. If you wanted the worker around for follow-up turns or a parallel workflow, don't call `stop` until you're done with it. To resume work under the same name, relaunch — `csd launch my-task /path/to/project` again — and you'll get a fresh worker at the same shim path.
 
@@ -152,8 +167,8 @@ $SKILL/csd list api                  # substring filter on tmux name
 ## Reference
 
 ```
-csd launch <tmux-name> <cwd> [-- claude-args...]
-csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]
+csd launch [--harness <name>] <tmux-name> <cwd> [-- harness-args...]
+csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]    # claude only
 csd list [--all] [<pattern>]
 csd grant-consent
 
@@ -216,7 +231,7 @@ $SKILL/csd adopt my-task /path/to/project <session-id>
 # stdout: /tmp/csd-workers/bin/my-task   (same shim contract as launch)
 ```
 
-`adopt` pre-writes the meta keyed by `<session-id>`, starts `claude --resume <session-id>` (which preserves the id, so the worker emits events normally), and writes the shim — so the resumed conversation is fully driveable (`converse`/`status`/`read-turn`/…), with all prior context intact. If a tmux session of that name already exists (e.g. restored by [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) / tmux-continuum), `adopt` respawns its pane *in place*, preserving the restored layout; otherwise it opens a new one.
+`adopt` pre-writes the meta keyed by `<session-id>`, starts `claude --resume <session-id>` (which preserves the id, so the worker emits events normally), and writes the shim — so the resumed conversation is fully driveable (`converse`/`status`/`read-turn`/…), with all prior context intact. If a tmux session of that name already exists (e.g. restored by [tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect) / tmux-continuum), `adopt` respawns its pane *in place*, preserving the restored layout; otherwise it opens a new one. Because `adopt` resumes by session id, it is Claude-only — Codex and Pi mint their own ids and offer no resume-by-id, so relaunch those instead.
 
 Find a worker's `<session-id>` from its working directory: the newest `*.jsonl` in `~/.claude/projects/<cwd with every / . _ replaced by ->`. For bulk recovery (e.g. pairing with tmux-continuum's `@continuum-boot`), `examples/recover-workers.sh` reads a tmux-resurrect snapshot, derives each id, and calls `adopt` per worker — run it with `--dry-run` first. Note: workers are restored as resumed sessions, not their original tool/MCP state; re-pass any launch args (e.g. `-- --model …`) you depended on.
 
@@ -247,7 +262,10 @@ The `csd` CLI honors a small set of env vars. All are optional.
 | Variable | Purpose |
 |---|---|
 | `CSD_CLAUDE_BIN` | Path to the `claude` binary. Defaults to `claude` (resolved via `PATH`). Set when claude is not on `PATH` or you want to pin a specific version. |
+| `CSD_CODEX_BIN`, `CSD_PI_BIN` | The same, for the `codex` and `pi` binaries when driving those harnesses. |
+| `CSD_CODEX_MODEL`, `CSD_PI_MODEL` | Model to launch a Codex or Pi worker with. Defaults: `gpt-5.5` (codex), `openai-codex/gpt-5.5` (pi). |
+| `CSD_WORKER_DIR` | Worker state directory. Defaults to `/tmp/csd-workers`. |
 | `CSD_CONVERSE_DIAG_FILE` | When set, `csd converse` writes a post-mortem diagnostic on timeout — `ps` tree, `tmux capture-pane`, last 30 lines of the claude session JSONL, last 20 lines of the csd events JSONL — to this path, then emits a `csd-diagnostic: <path>` pointer to stderr. The file is overwritten on each timeout. Unset = no diagnostic file. Useful when wrapping csd in a harness that can ship the file off-box before the worker is reaped. |
-| `HOME` | Used to locate `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` and the one-time consent file (`~/.claude/.claude-session-driver-consent`). |
+| `HOME` | Locates the Claude transcript (`~/.claude/projects/<encoded-cwd>/<sid>.jsonl`), the consent file (`~/.claude/.claude-session-driver-consent`), and the per-harness auth staged at launch (`~/.codex`, `~/.pi/agent`). Codex and Pi record their own transcript path in the worker meta. |
 
 The same list is shown by `csd help`.

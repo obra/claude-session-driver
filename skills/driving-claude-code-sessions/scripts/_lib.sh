@@ -29,7 +29,7 @@ _CSD_WORKER_DIR="${CSD_WORKER_DIR:-/tmp/csd-workers}"
 
 # Event types emitted by the emit-event hook. Keep in sync with the case
 # statement in hooks/emit-event.
-_CSD_VALID_EVENTS="session_start user_prompt_submit pre_tool_use stop session_end"
+_CSD_VALID_EVENTS="session_start user_prompt_submit pre_tool_use post_tool_use stop session_end"
 
 validate_event_type() {
   local arg="$1"

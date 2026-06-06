@@ -1,6 +1,6 @@
 {
   "name": "claude-session-driver",
-  "description": "Launch, control, and monitor other Claude Code sessions as workers via tmux",
+  "description": "Launch, control, and monitor coding-agent sessions (Claude Code, Codex, Pi) as workers via tmux",
   "version": "3.0.2",
   "author": {
     "name": "Jesse Vincent",
