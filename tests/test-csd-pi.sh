@@ -33,6 +33,27 @@ ev_seq=$(jq -r '.event' "$EV" 2>/dev/null | tr '\n' ',')
 echo "$ev_seq" | grep -q 'session_start,user_prompt_submit,pre_tool_use,post_tool_use,stop' && pass "poller synthesizes the event sequence" || fail "events" "got $ev_seq"
 rm -rf "$SD" "$WDIR"
 
+# Regression: any non-toolUse terminal stopReason must emit `stop` (forward-compat).
+SDx=$(mktemp -d); WDx=$(mktemp -d); SIDx="019e0000-0000-7000-8000-0000000000cc"
+{
+  printf '{"type":"session","version":3,"id":"%s","cwd":"/w"}\n' "$SIDx"
+  printf '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n'
+  printf '{"type":"message","message":{"role":"assistant","stopReason":"length","content":[{"type":"text","text":"PARTIAL"}]}}\n'
+} > "$SDx/a_${SIDx}.jsonl"
+( source "$SCR/_lib.sh"; _load_driver pi; harness_poll "$SDx" "$WDx" "no-tmux-$$" ) >/dev/null 2>&1 || true
+grep -q '"event":"stop"' "$WDx/$SIDx.events.jsonl" 2>/dev/null && pass "non-stop terminal stopReason emits stop" || fail "terminal stopReason" "no stop event"
+rm -rf "$SDx" "$WDx"
+
+# Regression: the poller tails the NEWEST session file, not an arbitrary one.
+SDn=$(mktemp -d); WDn=$(mktemp -d)
+OLDID="019e0000-0000-7000-8000-0000000000d1"; NEWID="019e0000-0000-7000-8000-0000000000d2"
+printf '{"type":"session","version":3,"id":"%s","cwd":"/w"}\n{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"OLD"}]}}\n' "$OLDID" > "$SDn/old_${OLDID}.jsonl"
+sleep 1
+printf '{"type":"session","version":3,"id":"%s","cwd":"/w"}\n{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"NEW"}]}}\n' "$NEWID" > "$SDn/new_${NEWID}.jsonl"
+( source "$SCR/_lib.sh"; _load_driver pi; harness_poll "$SDn" "$WDn" "no-tmux-$$" ) >/dev/null 2>&1 || true
+[ -f "$WDn/$NEWID.meta" ] && pass "poller registers the newest session" || fail "newest file" "registered wrong/none"
+rm -rf "$SDn" "$WDn"
+
 # --- prepare + launch + env slots ---
 HOME_DIR=$(mktemp -d); CWD=$(mktemp -d)
 ( source "$SCR/_lib.sh"; _load_driver pi; CSD_PLUGIN_DIR=/plug HOME=/nonexistent harness_prepare wkr "$CWD" "$HOME_DIR" )

@@ -913,6 +913,9 @@ if [ "${1:-}" = "poll" ]; then
   shift
   _phar="${1:?Usage: csd poll <harness> <session_dir> <worker_dir> <tmux_name>}"; shift
   _load_driver "$_phar"
+  if ! declare -F harness_poll >/dev/null 2>&1; then
+    echo "Error: harness '$_phar' has no poll control plane" >&2; exit 2
+  fi
   harness_poll "$@"
   exit $?
 fi

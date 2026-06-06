@@ -16,17 +16,26 @@ harness_quit_keys()     { echo "/quit"; }
 # worker's tmux session is gone. Runs in a second tmux window of the worker.
 harness_poll() {
   local sd="$1" wd="$2" tn="$3" f="" i
-  for i in $(seq 1 120); do
-    f=$(find "$sd" -name '*.jsonl' -type f 2>/dev/null | head -1)
-    [ -n "$f" ] && break
+  # Discover the NEWEST session file (ls -t, not unsorted find), retrying.
+  for i in $(seq 1 240); do
+    f=$(ls -t "$sd"/*.jsonl 2>/dev/null | head -1) || f=""
+    [ -n "$f" ] && [ -f "$f" ] && break
+    f=""
     tmux has-session -t "$tn" 2>/dev/null || return 0
     sleep 0.5
   done
   [ -z "$f" ] && return 0
-  local sid cwd
-  sid=$(head -1 "$f" | jq -r '.id // empty' 2>/dev/null) || sid=""
-  cwd=$(head -1 "$f" | jq -r '.cwd // empty' 2>/dev/null) || cwd=""
+  # Read the session id from line 1, retrying: find can see the file before pi
+  # flushes line 1 (TOCTOU). A one-shot read would kill the sole event producer.
+  local sid="" cwd=""
+  for i in $(seq 1 240); do
+    sid=$(head -1 "$f" 2>/dev/null | jq -r '.id // empty' 2>/dev/null) || sid=""
+    [ -n "$sid" ] && break
+    tmux has-session -t "$tn" 2>/dev/null || return 0
+    sleep 0.5
+  done
   [ -z "$sid" ] && return 0
+  cwd=$(head -1 "$f" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null) || cwd=""
   if [ ! -f "$wd/$sid.meta" ]; then
     jq -n --arg tn "$tn" --arg sid "$sid" --arg cwd "$cwd" --arg tp "$f" \
       '{tmux_name:$tn, session_id:$sid, cwd:$cwd, transcript_path:$tp, harness:"pi"}' \
@@ -35,11 +44,15 @@ harness_poll() {
   local ev="$wd/$sid.events.jsonl"
   _pi_emit(){ jq -cn --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --arg e "$1" '{ts:$ts, event:$e}' >> "$ev"; }
   _pi_emit session_start
-  local prev=1 n line typ role stop
+  local prev=1 n line typ role stop read_cnt
   while true; do
-    n=$(wc -l < "$f" | tr -d ' ')
-    if [ "$n" -gt "$prev" ]; then
+    # File vanished (rotation/cleanup) -> end the session cleanly, don't crash.
+    if [ ! -f "$f" ]; then _pi_emit session_end; break; fi
+    n=$(wc -l < "$f" 2>/dev/null | tr -d ' ') || n=""
+    if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
+      read_cnt=0
       while IFS= read -r line; do
+        read_cnt=$((read_cnt + 1))   # count every line read (advance offset by what we consumed)
         [ -z "$line" ] && continue
         typ=$(printf '%s' "$line" | jq -r '.type // empty' 2>/dev/null) || typ=""
         role=$(printf '%s' "$line" | jq -r '.message.role // empty' 2>/dev/null) || role=""
@@ -47,12 +60,11 @@ harness_poll() {
         case "$typ:$role:$stop" in
           message:user:*)            _pi_emit user_prompt_submit ;;
           message:assistant:toolUse) _pi_emit pre_tool_use ;;
+          message:assistant:?*)      _pi_emit stop ;;   # any non-toolUse terminal stopReason
           message:toolResult:*)      _pi_emit post_tool_use ;;
-          message:assistant:stop)    _pi_emit stop ;;
-          message:assistant:error)   _pi_emit stop ;;
         esac
-      done < <(tail -n +"$((prev+1))" "$f")
-      prev=$n
+      done < <(tail -n +"$((prev + 1))" "$f" 2>/dev/null)
+      prev=$((prev + read_cnt))      # advance by lines actually consumed, NOT the stale wc -l
     fi
     tmux has-session -t "$tn" 2>/dev/null || { _pi_emit session_end; break; }
     sleep 0.3
