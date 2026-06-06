@@ -1,0 +1,23 @@
+#!/bin/bash
+# Fake pi for csd tests (no API). Writes a session JSONL (boot turn) under the
+# per-worker session dir, prints the status-bar glyph (for harness_await_ready),
+# then confirms each submitted prompt with a fresh `user` record (so the poller
+# emits user_prompt_submit and csd's send-confirmation succeeds) but produces NO
+# new completed turn — so a correct converse waits instead of echoing the stale
+# boot turn (multi-turn regression, mirroring fake-codex).
+sd="${PI_CODING_AGENT_SESSION_DIR:-.}"
+while [ $# -gt 0 ]; do case "$1" in --session-dir) sd="$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "$sd"
+SID="019efake-0000-7000-8000-$(printf '%012d' "$$")"
+SF="$sd/2026-01-01T00-00-00-000Z_${SID}.jsonl"
+{
+  printf '{"type":"session","version":3,"id":"%s","cwd":"."}\n' "$SID"
+  printf '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"boot"}]}}\n'
+  printf '{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"FAKE_PI_DONE"}]}}\n'
+} > "$SF"
+
+echo "0.0%/272k (auto)"   # status bar -> harness_await_ready returns fast
+
+while IFS= read -r _line; do
+  printf '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"next"}]}}\n' >> "$SF"
+done

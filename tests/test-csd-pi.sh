@@ -66,4 +66,24 @@ bash "$SCR/csd" poll pi "$SD3" "$WD3" "no-tmux-$$" >/dev/null 2>&1 || true
 [ -f "$WD3/$SID3.meta" ] && pass "csd poll self-registers" || fail "csd poll" "no meta"
 rm -rf "$SD3" "$WD3"
 
+# --- integration: fake-pi launch -> poller self-register -> read-turn -> multi-turn ---
+FAKE="$SCRIPT_DIR/fixtures/fake-pi"; chmod +x "$FAKE" 2>/dev/null || true
+IHOME=$(mktemp -d); mkdir -p "$IHOME/.claude" "$IHOME/.pi/agent"; touch "$IHOME/.claude/.claude-session-driver-consent"
+echo '{}' > "$IHOME/.pi/agent/auth.json"
+IWDIR=$(mktemp -d); ITN="test-pi-$$"; IWD=$(mktemp -d)
+run_csd(){ CSD_WORKER_DIR="$IWDIR" CSD_PI_BIN="$FAKE" HOME="$IHOME" bash "$SCR/csd" "$@"; }
+run_csd launch --harness pi "$ITN" "$IWD" >/dev/null 2>&1 || true
+sleep 2
+OUT=$(run_csd --worker "$ITN" read-turn 2>/dev/null || true)
+echo "$OUT" | grep -q "FAKE_PI_DONE" && pass "pi read-turn renders the turn" || fail "pi read-turn" "got: $OUT"
+ST=$(run_csd --worker "$ITN" status 2>/dev/null || true)
+[ "$ST" = "idle" ] && pass "pi status idle" || fail "pi status" "got: $ST"
+M=$(ls "$IWDIR"/*.meta 2>/dev/null | head -1)
+[ -n "$M" ] && [ "$(jq -r '.harness' "$M")" = "pi" ] && pass "pi meta self-registered" || fail "pi meta" "missing/wrong"
+OUT2=$(run_csd --worker "$ITN" converse "again" 4 2>/dev/null || true)
+echo "$OUT2" | grep -q FAKE_PI_DONE && fail "pi converse stale-turn" "echoed prior: $OUT2" || pass "pi converse waits for a new turn (no stale)"
+run_csd --worker "$ITN" stop >/dev/null 2>&1 || true
+tmux kill-session -t "$ITN" 2>/dev/null || true
+rm -rf "$IHOME" "$IWD" "$IWDIR"
+
 echo "pi-driver: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
