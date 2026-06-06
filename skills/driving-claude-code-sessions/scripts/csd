@@ -323,22 +323,35 @@ cmd_converse() {
   local prompt="${1:?Usage: converse [--with-turn] <prompt> [timeout=120]}"
   local timeout="${2:-120}"
 
-  local sid cwd encoded log_file event_file
-  sid=$(resolve_session "$WORKER")
-  cwd=$(jq -r '.cwd' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null)
-  if [ -z "$cwd" ] || [ "$cwd" = "null" ]; then
-    echo "Error: Could not determine working directory from meta file" >&2
-    return 1
-  fi
-  log_file=$(harness_transcript_path "$sid" "$cwd")
-  event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
+  local strategy sid cwd log_file event_file before_count=0 after_line=0
+  strategy=$(harness_id_strategy)
 
-  local before_count after_line
-  before_count=$(harness_count_text "$log_file")
-  after_line=0
-  [ -f "$event_file" ] && after_line=$(wc -l < "$event_file" | tr -d ' ')
+  if [ "$strategy" = "assign" ]; then
+    sid=$(resolve_session "$WORKER")
+    cwd=$(jq -r '.cwd' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null)
+    if [ -z "$cwd" ] || [ "$cwd" = "null" ]; then
+      echo "Error: Could not determine working directory from meta file" >&2
+      return 1
+    fi
+    log_file=$(harness_transcript_path "$sid" "$cwd")
+    event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
+    before_count=$(harness_count_text "$log_file")
+    [ -f "$event_file" ] && after_line=$(wc -l < "$event_file" | tr -d ' ')
+  fi
 
   cmd_send "$prompt"
+
+  if [ "$strategy" = "derive" ]; then
+    # The first prompt self-registered the worker; resolve it now.
+    sid=$(resolve_session "$WORKER" 2>/dev/null) || sid=""
+    if [ -z "$sid" ]; then
+      echo "Error: worker did not register a session after the prompt" >&2
+      return 1
+    fi
+    cwd=$(jq -r '.cwd' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null)
+    log_file=$(harness_transcript_path "$sid" "$cwd")
+    event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
+  fi
 
   if ! cmd_wait_for_turn "$timeout" --after-line "$after_line" >/dev/null; then
     echo "Error: Worker did not finish within ${timeout}s" >&2
@@ -392,18 +405,22 @@ _prompt_submitted_since() {
 
 cmd_send() {
   local prompt="${1:?Usage: send <prompt-text>}"
-  local sid tmux_name
-  sid=$(resolve_session "$WORKER")
-  tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
+  local tmux_name
+  tmux_name=$(_worker_tmux_name "$WORKER")
 
   if ! tmux has-session -t "$tmux_name" 2>/dev/null; then
     echo "Error: tmux session '$tmux_name' does not exist" >&2
     return 1
   fi
 
-  local event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
-  local before_line=0
-  [ -f "$event_file" ] && before_line=$(wc -l < "$event_file" | tr -d ' ')
+  # assign workers have an events file already; derive workers register it on
+  # this prompt's first lifecycle event. Capture a baseline if a sid resolves now.
+  local sid event_file="" before_line=0
+  sid=$(resolve_session "$WORKER" 2>/dev/null) || sid=""
+  if [ -n "$sid" ]; then
+    event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
+    [ -f "$event_file" ] && before_line=$(wc -l < "$event_file" | tr -d ' ')
+  fi
 
   local ESC PASTE_START PASTE_END SAFE
   ESC=$'\x1b'
@@ -425,7 +442,16 @@ cmd_send() {
   local retry_interval="${CSD_SUBMIT_RETRY_INTERVAL:-2}"
   local waited=0 since_enter=0
   tmux send-keys -t "$tmux_name" Enter
-  while ! _prompt_submitted_since "$event_file" "$before_line"; do
+  while :; do
+    # derive: the producer self-registers the meta on the first event — resolve
+    # the sid + events file once it appears, then confirm against it.
+    if [ -z "$event_file" ]; then
+      sid=$(resolve_session "$WORKER" 2>/dev/null) || sid=""
+      [ -n "$sid" ] && event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
+    fi
+    if [ -n "$event_file" ] && _prompt_submitted_since "$event_file" "$before_line"; then
+      break
+    fi
     if awk "BEGIN{exit !($waited >= $submit_timeout)}"; then
       echo "Error: prompt pasted but worker did not confirm submission within ${submit_timeout}s (issue #20). The tmux session may be slow to accept the paste; raise CSD_SUBMIT_TIMEOUT to allow more time." >&2
       return 1

@@ -67,3 +67,17 @@ resolve_session() {
   fi
   echo "$found"
 }
+
+# Print the tmux session name for <worker>, working even before a derive worker
+# has self-registered (falls back to <worker> when it names a live tmux session —
+# the shim sets --worker to the tmux_name).
+_worker_tmux_name() {
+  local worker="$1" sid tn
+  sid=$(resolve_session "$worker" 2>/dev/null) || sid=""
+  if [ -n "$sid" ] && [ -f "$_CSD_WORKER_DIR/${sid}.meta" ]; then
+    tn=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null)
+    [ -n "$tn" ] && [ "$tn" != "null" ] && { echo "$tn"; return 0; }
+  fi
+  if tmux has-session -t "$worker" 2>/dev/null; then echo "$worker"; return 0; fi
+  echo "$worker"
+}
