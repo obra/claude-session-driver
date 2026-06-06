@@ -239,7 +239,9 @@ harness_env_args() {
 harness_post_launch() {
   local tmux_name="$1"
   local sd="${_CSD_CURRENT_WORKER_HOME:-}/sessions"
-  tmux new-window -t "$tmux_name" -n csd-poll \
+  # -d: do NOT switch the active window — cmd_send targets the session's active
+  # window, which must stay pi's (window 0), not the poller's (B1 from review).
+  tmux new-window -d -t "$tmux_name" -n csd-poll \
     "exec '$CSD_PATH' poll pi '$sd' '$_CSD_WORKER_DIR' '$tmux_name'"
 }
 
@@ -328,7 +330,7 @@ SD3=$(mktemp -d); WD3=$(mktemp -d)
 SID3="019e0000-0000-7000-8000-0000000000bb"
 printf '{"type":"session","version":3,"id":"%s","cwd":"/w"}\n' "$SID3" > "$SD3/x_${SID3}.jsonl"
 printf '{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Z"}]}}\n' >> "$SD3/x_${SID3}.jsonl"
-timeout 10 bash "$SCR/csd" poll pi "$SD3" "$WD3" "no-tmux-$$" >/dev/null 2>&1 || true
+bash "$SCR/csd" poll pi "$SD3" "$WD3" "no-tmux-$$" >/dev/null 2>&1 || true  # self-exits vs missing tmux
 [ -f "$WD3/$SID3.meta" ] && pass "csd poll self-registers" || fail "csd poll" "no meta"
 rm -rf "$SD3" "$WD3"
 ```
