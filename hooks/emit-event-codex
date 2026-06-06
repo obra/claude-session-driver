@@ -39,7 +39,7 @@ case "$EV" in
   PostToolUse)      e=post_tool_use ;;
   Stop)             e=stop ;;
   SessionEnd)       e=session_end ;;
-  *)                e=$(echo "$EV" | sed 's/\([A-Z]\)/_\L\1/g; s/^_//') ;;
+  *)                e=$(echo "$EV" | sed 's/\([A-Z]\)/_\1/g; s/^_//' | tr '[:upper:]' '[:lower:]') ;;
 esac
 
 ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

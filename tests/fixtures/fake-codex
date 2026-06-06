@@ -1,12 +1,14 @@
 #!/bin/bash
-# Fake codex for csd tests. Mimics the parts csd drives:
-#  - parses -C <cwd>
-#  - reads $CODEX_HOME/config.toml for the emit-event-codex hook command
+# Fake codex for csd tests (derive control-plane flow, no API). It:
+#  - parses -C <cwd>; reads $CODEX_HOME/config.toml for the emit-event-codex hook
 #  - mints a session id + writes a minimal rollout
-#  - fires the lifecycle hooks with synthetic payloads so emit-event-codex
-#    self-registers <sid>.meta + <sid>.events.jsonl
-#  - prints the trust-gate text (so harness_post_launch's dismissal fires fast)
-#    and the composer glyph (so harness_await_ready returns fast), then stays alive.
+#  - fires a BOOT turn (codex emits one before the controller's first prompt) so
+#    read-turn/status have a completed turn to read
+#  - prints the trust-gate text (fast harness_post_launch) and the composer glyph
+#    (fast harness_await_ready), drains the dismissal keystroke
+#  - then CONFIRMS each submitted prompt (UserPromptSubmit, so csd's send works)
+#    but produces NO new completed turn — letting tests assert that converse waits
+#    for a real new turn rather than echoing the stale boot turn.
 cwd="."
 while [ $# -gt 0 ]; do case "$1" in -C) cwd="$2"; shift 2 ;; *) shift ;; esac; done
 
@@ -22,12 +24,21 @@ HOOKCMD=$(grep -m1 'emit-event-codex' "$CODEX_HOME/config.toml" | sed 's/^comman
 fire(){ printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s"%s}' \
   "$SID" "$ROLL" "$cwd" "$1" "${2:-}" | $HOOKCMD; }
 
+# Boot turn.
 fire SessionStart
-fire UserPromptSubmit ',"prompt":"hi"'
+fire UserPromptSubmit ',"prompt":"boot"'
 fire PreToolUse ',"tool_name":"Bash"'
+printf '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"boot"}]}}\n' >> "$ROLL"
 printf '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"FAKE_DONE"}]}}\n' >> "$ROLL"
 printf '{"type":"event_msg","payload":{"type":"agent_message","message":"FAKE_DONE"}}\n' >> "$ROLL"
 fire Stop
 
-printf '\xe2\x80\xba\n'   # codex composer glyph, so harness_await_ready returns fast
-exec sleep 60
+printf '\xe2\x80\xba\n'   # composer glyph -> harness_await_ready returns fast
+
+# Drain the trust-gate keystroke (harness_post_launch sends '2' + Enter).
+read -t 2 -r _drain 2>/dev/null || true
+
+# Confirm each submitted prompt but produce NO new completed turn.
+while IFS= read -r _line; do
+  fire UserPromptSubmit ',"prompt":"next"'
+done

@@ -57,7 +57,7 @@ harness_post_launch() {
   local tmux_name="$1" deadline=$((SECONDS + 8)) pane
   while [ "$SECONDS" -lt "$deadline" ]; do
     pane=$(tmux capture-pane -t "$tmux_name" -p 2>/dev/null || true)
-    if echo "$pane" | grep -qiE 'hooks need review|trust all|review'; then
+    if echo "$pane" | grep -qiE 'hooks need review|trust all and continue|trust all'; then
       tmux send-keys -t "$tmux_name" -l '2'; sleep 0.3
       tmux send-keys -t "$tmux_name" Enter
       return 0
@@ -115,5 +115,5 @@ harness_last_text() {
   local rollout="$1"
   [ -f "$rollout" ] || return 0
   grep '"type":"event_msg"' "$rollout" \
-    | jq -rs 'map(select(.payload.type=="agent_message")) | last | .payload.message // ""' 2>/dev/null
+    | jq -rs 'map(select(.payload.type=="agent_message")) | last | .payload.message // ""' 2>/dev/null || true
 }

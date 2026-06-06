@@ -323,13 +323,21 @@ cmd_converse() {
   local prompt="${1:?Usage: converse [--with-turn] <prompt> [timeout=120]}"
   local timeout="${2:-120}"
 
-  local strategy sid cwd log_file event_file before_count=0 after_line=0
+  local strategy sid="" cwd log_file event_file before_count=0 after_line=0
   strategy=$(harness_id_strategy)
 
+  # Resolve the worker up-front when possible so the turn baselines are captured
+  # BEFORE sending — always for assign; for derive on the 2nd+ turn the meta
+  # already exists. (A derive worker's FIRST prompt isn't registered yet, so the
+  # baselines correctly stay 0 — there is no prior turn to be relative to.)
   if [ "$strategy" = "assign" ]; then
     sid=$(resolve_session "$WORKER")
+  else
+    sid=$(resolve_session "$WORKER" 2>/dev/null) || sid=""
+  fi
+  if [ -n "$sid" ]; then
     cwd=$(jq -r '.cwd' "$_CSD_WORKER_DIR/${sid}.meta" 2>/dev/null)
-    if [ -z "$cwd" ] || [ "$cwd" = "null" ]; then
+    if [ "$strategy" = "assign" ] && { [ -z "$cwd" ] || [ "$cwd" = "null" ]; }; then
       echo "Error: Could not determine working directory from meta file" >&2
       return 1
     fi
@@ -341,8 +349,8 @@ cmd_converse() {
 
   cmd_send "$prompt"
 
-  if [ "$strategy" = "derive" ]; then
-    # The first prompt self-registered the worker; resolve it now.
+  # A derive worker registering on THIS prompt (its first turn) is resolvable now.
+  if [ -z "$sid" ]; then
     sid=$(resolve_session "$WORKER" 2>/dev/null) || sid=""
     if [ -z "$sid" ]; then
       echo "Error: worker did not register a session after the prompt" >&2
@@ -467,37 +475,44 @@ cmd_send() {
 }
 
 cmd_stop() {
+  # Resolve the tmux session independently of the sid so a derive worker that
+  # never registered (only sidecar + homes + shim, no meta) is still stoppable
+  # and fully cleaned up (it staged a copy of the operator's creds in homes/).
   local sid tmux_name
-  sid=$(resolve_session "$WORKER")
-  tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
+  tmux_name=$(_worker_tmux_name "$WORKER")
+  sid=$(resolve_session "$WORKER" 2>/dev/null) || sid=""
+  if [ -n "$sid" ] && [ -f "$_CSD_WORKER_DIR/${sid}.meta" ]; then
+    tmux_name=$(jq -r '.tmux_name' "$_CSD_WORKER_DIR/${sid}.meta")
+  fi
 
   if tmux has-session -t "$tmux_name" 2>/dev/null; then
     tmux send-keys -t "$tmux_name" -l "$(harness_quit_keys)"
     tmux send-keys -t "$tmux_name" Enter
 
-    # Wait up to 10s for session_end
-    local event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
-    local deadline=$((SECONDS + 10))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-      if [ -f "$event_file" ] && grep -q '"event":"session_end"' "$event_file"; then
-        sleep 1
-        break
-      fi
-      sleep 0.5
-    done
+    if [ -n "$sid" ]; then
+      # Wait up to 10s for session_end
+      local event_file="$_CSD_WORKER_DIR/${sid}.events.jsonl"
+      local deadline=$((SECONDS + 10))
+      while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ -f "$event_file" ] && grep -q '"event":"session_end"' "$event_file"; then
+          sleep 1
+          break
+        fi
+        sleep 0.5
+      done
+    fi
 
     if tmux has-session -t "$tmux_name" 2>/dev/null; then
       tmux kill-session -t "$tmux_name"
     fi
   fi
 
-  rm -f "$_CSD_WORKER_DIR/${sid}.events.jsonl"
-  rm -f "$_CSD_WORKER_DIR/${sid}.meta"
+  [ -n "$sid" ] && rm -f "$_CSD_WORKER_DIR/${sid}.events.jsonl" "$_CSD_WORKER_DIR/${sid}.meta"
   rm -f "$_CSD_WORKER_DIR/bin/${tmux_name}"
   rm -f "$_CSD_WORKER_DIR/${tmux_name}.harness"
   rm -rf "$_CSD_WORKER_DIR/homes/${tmux_name}"
 
-  echo "Worker $tmux_name ($sid) stopped. Shim removed."
+  echo "Worker $tmux_name (${sid:-unregistered}) stopped. Shim removed."
 }
 
 cmd_handoff() {
@@ -598,8 +613,10 @@ cmd_launch() {
   if [ "${1:-}" = "--" ]; then shift; fi
   local extra_args=("$@")
 
-  # Capture the invocation for the reproduce line
-  local original_argv=("$tmux_name" "$working_dir")
+  # Capture the invocation for the reproduce line (include --harness when non-default).
+  local original_argv=()
+  [ "$harness" != "claude" ] && original_argv+=("--harness" "$harness")
+  original_argv+=("$tmux_name" "$working_dir")
   if [ "${#extra_args[@]}" -gt 0 ]; then
     original_argv+=("--" "${extra_args[@]}")
   fi
@@ -634,7 +651,7 @@ EOF
   local session_id=""
   [ "$(harness_id_strategy)" = "assign" ] && session_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
-  mkdir -p $_CSD_WORKER_DIR $_CSD_WORKER_DIR/bin
+  mkdir -p "$_CSD_WORKER_DIR" "$_CSD_WORKER_DIR/bin"
   # Best-effort back-compat: only symlink the legacy path when it doesn't already
   # exist (a leftover real /tmp/claude-workers dir from older csd is left alone;
   # relaunch any live pre-upgrade workers after this upgrade).
@@ -736,8 +753,10 @@ cmd_adopt() {
   if [ "${1:-}" = "--" ]; then shift; fi
   local extra_args=("$@")
 
-  # Capture the invocation for the reproduce line
-  local original_argv=("$tmux_name" "$working_dir" "$session_id")
+  # Capture the invocation for the reproduce line (include --harness when non-default).
+  local original_argv=()
+  [ "$harness" != "claude" ] && original_argv+=("--harness" "$harness")
+  original_argv+=("$tmux_name" "$working_dir" "$session_id")
   if [ "${#extra_args[@]}" -gt 0 ]; then
     original_argv+=("--" "${extra_args[@]}")
   fi
@@ -770,7 +789,7 @@ EOF
     return 1
   fi
 
-  mkdir -p $_CSD_WORKER_DIR $_CSD_WORKER_DIR/bin
+  mkdir -p "$_CSD_WORKER_DIR" "$_CSD_WORKER_DIR/bin"
   # Best-effort back-compat: only symlink the legacy path when it doesn't already
   # exist (a leftover real /tmp/claude-workers dir from older csd is left alone;
   # relaunch any live pre-upgrade workers after this upgrade).

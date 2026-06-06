@@ -60,6 +60,11 @@ ST=$(run_csd --worker "$ITN" status 2>/dev/null || true)
 # meta self-registered with harness=codex
 M=$(ls "$IWDIR"/*.meta 2>/dev/null | head -1)
 [ -n "$M" ] && [ "$(jq -r '.harness' "$M")" = "codex" ] && pass "codex meta self-registered" || fail "codex meta" "missing/wrong"
+# Multi-turn safety (regression for the derive after_line/before_count bug):
+# the worker confirms the prompt but produces no NEW completed turn, so a correct
+# converse must keep waiting and NOT echo the stale boot turn's answer.
+OUT2=$(run_csd --worker "$ITN" converse "again please" 4 2>/dev/null || true)
+echo "$OUT2" | grep -q FAKE_DONE && fail "converse stale-turn" "echoed the prior turn: $OUT2" || pass "converse waits for a new turn (no stale answer)"
 run_csd --worker "$ITN" stop >/dev/null 2>&1 || true
 tmux kill-session -t "$ITN" 2>/dev/null || true
 rm -rf "$IHOME" "$IWD" "$IWDIR"
