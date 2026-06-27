@@ -1430,15 +1430,17 @@ var isTurnEnd = (line) => {
 };
 async function cmdWaitForTurn(ctx, worker, opts) {
   const timeout = opts.timeout ?? 60;
+  const idleTimeout = opts.idleTimeout;
   const pollMs = opts.pollMs ?? 500;
   const sid = resolveSession(ctx.workerDir, worker);
   if (sid === null) {
     return { stderr: `Error: no worker known as '${worker}'`, code: 1 };
   }
   const eventFile = eventsPath(ctx.workerDir, sid);
-  const deadline = Date.now() + timeout * 1e3;
+  const absoluteDeadline = Date.now() + timeout * 1e3;
+  let idleDeadline = idleTimeout !== void 0 ? Date.now() + idleTimeout * 1e3 : Number.POSITIVE_INFINITY;
   while (!(0, import_node_fs10.existsSync)(eventFile)) {
-    if (Date.now() >= deadline) {
+    if (Date.now() >= absoluteDeadline) {
       return {
         stderr: `Timeout waiting for event file: ${eventFile}`,
         code: 1
@@ -1447,7 +1449,7 @@ async function cmdWaitForTurn(ctx, worker, opts) {
     await sleep5(pollMs);
   }
   let linesChecked = opts.afterLine ?? readRawLines(eventFile).length;
-  while (Date.now() < deadline) {
+  while (Date.now() < absoluteDeadline && Date.now() < idleDeadline) {
     const lines = readRawLines(eventFile);
     if (lines.length > linesChecked) {
       const match = lines.slice(linesChecked).find(isTurnEnd);
@@ -1455,8 +1457,17 @@ async function cmdWaitForTurn(ctx, worker, opts) {
         return { stdout: match, code: 0 };
       }
       linesChecked = lines.length;
+      if (idleTimeout !== void 0) {
+        idleDeadline = Date.now() + idleTimeout * 1e3;
+      }
     }
     await sleep5(pollMs);
+  }
+  if (idleTimeout !== void 0 && idleDeadline <= absoluteDeadline) {
+    return {
+      stderr: `Timeout waiting for turn: no worker activity for ${idleTimeout}s`,
+      code: 1
+    };
   }
   return {
     stderr: `Timeout waiting for turn (stop or session_end) after ${timeout}s`,
@@ -1521,6 +1532,7 @@ csd-diagnostic: ${diagDest}` : "";
   };
   const waitResult = await cmdWaitForTurn(ctx, worker, {
     timeout,
+    idleTimeout: opts.idleTimeout,
     afterLine,
     pollMs: opts.waitPollMs
   });
@@ -1986,9 +1998,12 @@ Top-level subcommands:
   help                 Show this message
 
 Per-worker subcommands (require --worker, supplied by the shim):
-  converse [--with-turn] <prompt> [timeout=120]
+  converse [--with-turn] <prompt> [timeout=120] [--idle-timeout <s>]
                        Send prompt, wait for turn, return assistant text.
                        --with-turn returns the full markdown turn instead
+                       --idle-timeout <s> fails only after <s> seconds with no
+                       new worker events (resets on activity); timeout stays the
+                       absolute ceiling
   send <prompt>        Send a prompt without waiting for the turn
   wait-for-turn [timeout=60] [--after-line N]
                        Block until the next stop OR session_end. By default the
@@ -2238,18 +2253,34 @@ async function run2(argv, io = realIo) {
       }
       const prompt = args[i];
       if (prompt === void 0 || prompt.trim() === "") {
-        io.err("Usage: converse [--with-turn] <prompt> [timeout=120]\n");
+        io.err(
+          "Usage: converse [--with-turn] <prompt> [timeout=120] [--idle-timeout <s>]\n"
+        );
         return 1;
       }
       let timeout = 120;
-      if (args[i + 1] !== void 0) {
-        timeout = Number(args[i + 1]);
-        if (!Number.isFinite(timeout)) {
-          io.err("Error: converse timeout must be a number\n");
-          return 2;
+      let idleTimeout;
+      const rest2 = args.slice(i + 1);
+      for (let j = 0; j < rest2.length; j++) {
+        if (rest2[j] === "--idle-timeout") {
+          idleTimeout = Number(rest2[j + 1]);
+          if (!Number.isFinite(idleTimeout)) {
+            io.err("Error: --idle-timeout must be a number\n");
+            return 2;
+          }
+          j += 1;
+        } else {
+          timeout = Number(rest2[j]);
+          if (!Number.isFinite(timeout)) {
+            io.err("Error: converse timeout must be a number\n");
+            return 2;
+          }
         }
       }
-      return emit(io, await cmdConverse(ctx, w, prompt, { withTurn, timeout }));
+      return emit(
+        io,
+        await cmdConverse(ctx, w, prompt, { withTurn, timeout, idleTimeout })
+      );
     }
     case "send": {
       const prompt = args[0];

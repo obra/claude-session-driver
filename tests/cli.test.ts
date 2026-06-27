@@ -267,6 +267,16 @@ describe('run — validation and dispatch', () => {
     expect(err()).toContain('Error: converse timeout must be a number');
   });
 
+  it('rejects converse with a non-numeric --idle-timeout', async () => {
+    const { io, err } = makeIo();
+    const code = await run(
+      ['--worker', 'w', 'converse', 'hello', '--idle-timeout', 'notanumber'],
+      io,
+    );
+    expect(code).toBe(2);
+    expect(err()).toContain('Error: --idle-timeout must be a number');
+  });
+
   it('rejects launch --harness bogus with a clean code-2 message (not a stack trace)', async () => {
     const { io, err } = makeIo();
     const tmpCwd = mkdtempSync(join(tmpdir(), 'csd-cwd-'));

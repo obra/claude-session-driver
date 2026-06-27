@@ -15,8 +15,14 @@ const sleep = (ms: number): Promise<void> =>
 export interface ConverseOpts {
   /** Render the full markdown turn instead of just the last assistant text. */
   withTurn?: boolean;
-  /** Wait-for-turn timeout in SECONDS (default 120). */
+  /** Wait-for-turn absolute timeout in SECONDS (default 120). */
   timeout?: number;
+  /**
+   * Optional idle timeout in SECONDS, forwarded to cmdWaitForTurn: fail the turn
+   * wait after this many seconds with no new worker events (any event resets
+   * it). The absolute `timeout` stays the hard ceiling. Unset → absolute only.
+   */
+  idleTimeout?: number;
   /** Knobs forwarded to cmdSend (keeps submission confirm fast in tests). */
   sendOpts?: SendOpts;
   /** Poll interval forwarded to cmdWaitForTurn, ms. */
@@ -127,6 +133,7 @@ export async function cmdConverse(
 
   const waitResult = await cmdWaitForTurn(ctx, worker, {
     timeout,
+    idleTimeout: opts.idleTimeout,
     afterLine,
     pollMs: opts.waitPollMs,
   });

@@ -98,9 +98,12 @@ Top-level subcommands:
   help                 Show this message
 
 Per-worker subcommands (require --worker, supplied by the shim):
-  converse [--with-turn] <prompt> [timeout=120]
+  converse [--with-turn] <prompt> [timeout=120] [--idle-timeout <s>]
                        Send prompt, wait for turn, return assistant text.
                        --with-turn returns the full markdown turn instead
+                       --idle-timeout <s> fails only after <s> seconds with no
+                       new worker events (resets on activity); timeout stays the
+                       absolute ceiling
   send <prompt>        Send a prompt without waiting for the turn
   wait-for-turn [timeout=60] [--after-line N]
                        Block until the next stop OR session_end. By default the
@@ -431,18 +434,34 @@ export async function run(argv: string[], io: Io = realIo): Promise<number> {
       }
       const prompt = args[i];
       if (prompt === undefined || prompt.trim() === '') {
-        io.err('Usage: converse [--with-turn] <prompt> [timeout=120]\n');
+        io.err(
+          'Usage: converse [--with-turn] <prompt> [timeout=120] [--idle-timeout <s>]\n',
+        );
         return 1;
       }
       let timeout = 120;
-      if (args[i + 1] !== undefined) {
-        timeout = Number(args[i + 1]);
-        if (!Number.isFinite(timeout)) {
-          io.err('Error: converse timeout must be a number\n');
-          return 2;
+      let idleTimeout: number | undefined;
+      const rest = args.slice(i + 1);
+      for (let j = 0; j < rest.length; j++) {
+        if (rest[j] === '--idle-timeout') {
+          idleTimeout = Number(rest[j + 1]);
+          if (!Number.isFinite(idleTimeout)) {
+            io.err('Error: --idle-timeout must be a number\n');
+            return 2;
+          }
+          j += 1;
+        } else {
+          timeout = Number(rest[j]);
+          if (!Number.isFinite(timeout)) {
+            io.err('Error: converse timeout must be a number\n');
+            return 2;
+          }
         }
       }
-      return emit(io, await cmdConverse(ctx, w, prompt, { withTurn, timeout }));
+      return emit(
+        io,
+        await cmdConverse(ctx, w, prompt, { withTurn, timeout, idleTimeout }),
+      );
     }
 
     case 'send': {

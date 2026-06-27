@@ -144,6 +144,36 @@ describe('cmdConverse', () => {
     expect(result.stdout).toBe('the fresh answer');
   });
 
+  it('forwards idleTimeout to the turn wait — a silent worker fails fast, not at the absolute timeout', async () => {
+    const ef = eventsPath(workerDir, SID);
+    // Accept the prompt (so cmdSend confirms) but never emit a turn-end: a
+    // silent turn. With a short idleTimeout and a generous absolute timeout, the
+    // wait must fail at the idle limit — proving idleTimeout was forwarded.
+    const tmux: Tmux = {
+      ...deadTmux(),
+      async hasSession() {
+        return true;
+      },
+      async sendEnter() {
+        appendEvent(ef, {
+          event: 'user_prompt_submit',
+          ts: '2025-01-01T00:00:01Z',
+        });
+      },
+    };
+    const ctx = makeCtx(workerDir, home, tmux);
+    const start = Date.now();
+    const result = await cmdConverse(ctx, SID, 'do the thing', {
+      timeout: 10, // generous absolute budget
+      idleTimeout: 0.2, // only 200ms of silence allowed
+      sendOpts: { submitTimeout: 5, retryInterval: 2, pollMs: 5 },
+      waitPollMs: 5,
+    });
+    expect(result.code).toBe(1);
+    // Were idleTimeout ignored, this would block ~10s (blowing the test budget).
+    expect(Date.now() - start).toBeLessThan(3000);
+  });
+
   it('--with-turn returns the rendered markdown turn', async () => {
     const ef = eventsPath(workerDir, SID);
     writeTranscript(home, [ASSISTANT_BEFORE, USER_PROMPT].join('\n'));

@@ -133,6 +133,77 @@ describe('cmdWaitForTurn', () => {
     );
   });
 
+  it('fails with an idle-timeout message when the worker goes silent (idleTimeout)', async () => {
+    const ef = eventsPath(workerDir, SID);
+    appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
+    // Absolute budget is generous (1s) but only 200ms of silence is allowed.
+    const result = await cmdWaitForTurn(makeCtx(workerDir), SID, {
+      timeout: 1,
+      idleTimeout: 0.2,
+      pollMs: 10,
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(
+      'Timeout waiting for turn: no worker activity for 0.2s',
+    );
+  });
+
+  it('resets the idle timeout on new activity, surviving past idleTimeout to the stop', async () => {
+    const ef = eventsPath(workerDir, SID);
+    appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
+    const p = cmdWaitForTurn(makeCtx(workerDir), SID, {
+      timeout: 5, // generous absolute
+      idleTimeout: 0.3, // 300ms idle window
+      pollMs: 10,
+    });
+    // Emit a non-turn-end event every 100ms (inside the 300ms idle window) for
+    // 600ms — past idleTimeout — then end the turn. Each event must reset the
+    // idle clock so the wait survives to the stop instead of failing at 300ms.
+    let n = 0;
+    const iv = setInterval(() => {
+      n += 1;
+      appendEvent(ef, {
+        event: 'pre_tool_use',
+        ts: `2025-01-01T00:00:1${n}Z`,
+        tool: 'Bash',
+        tool_input: {},
+      });
+    }, 100);
+    setTimeout(() => {
+      clearInterval(iv);
+      appendEvent(ef, { event: 'stop', ts: '2025-01-01T00:00:09Z' });
+    }, 600);
+    const result = await p;
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('{"event":"stop","ts":"2025-01-01T00:00:09Z"}');
+  });
+
+  it('still enforces the absolute timeout even while events keep arriving', async () => {
+    const ef = eventsPath(workerDir, SID);
+    appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
+    const p = cmdWaitForTurn(makeCtx(workerDir), SID, {
+      timeout: 0.3, // absolute ceiling
+      idleTimeout: 5, // idle is generous and would never fire
+      pollMs: 10,
+    });
+    // A chatty-but-stuck turn: events forever, never a turn-end. The absolute
+    // ceiling must still cut it off (the idle reset must not defeat it).
+    const iv = setInterval(() => {
+      appendEvent(ef, {
+        event: 'pre_tool_use',
+        ts: '2025-01-01T00:00:11Z',
+        tool: 'Bash',
+        tool_input: {},
+      });
+    }, 50);
+    const result = await p;
+    clearInterval(iv);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(
+      'Timeout waiting for turn (stop or session_end) after 0.3s',
+    );
+  });
+
   it('times out waiting for the event file when it never appears', async () => {
     const result = await cmdWaitForTurn(makeCtx(workerDir), SID, {
       timeout: 0.2,
