@@ -113,6 +113,8 @@ If you need to drive the worker more directly:
 /tmp/csd-workers/bin/my-task read-turn --full                    # last turn with complete tool results
 ```
 
+`send` returns as soon as the worker confirms the prompt — or, if the worker is mid-turn, as soon as the prompt is queued (see [Sending to a worker that is already busy](#sending-to-a-worker-that-is-already-busy)). Use `converse` when you want the reply.
+
 ### 4. Watching what the worker does
 
 Every tool call emits a `pre_tool_use` event with the tool name and input. Tail the event stream to watch in real time:
@@ -230,6 +232,22 @@ Don't trust worker B's summary of what it did — check the produced file. A wor
 
 `wait-for-turn` matches `stop` OR `session_end`, so it returns when the worker dies. Call `status` afterward: if it's `gone`, the worker crashed.
 
+### Sending to a worker that is already busy
+
+A worker that is mid-turn cannot take a prompt as a new turn: Claude Code *queues* it (the pane shows `Press up to edit queued messages`) and runs it when the current turn ends. A queued prompt emits **no `user_prompt_submit` and no `stop` of its own** — the whole queued turn is invisible to the event stream, and a single `stop` closes both turns.
+
+So `send` has nothing left to confirm. It delivers the prompt, reports this on stderr and exits **0**:
+
+```
+Note: worker 'my-task' is mid-turn, so the prompt was queued behind the running turn. ...
+```
+
+Do **not** re-send after that note, and do **not** raise `CSD_SUBMIT_TIMEOUT` — the event `send` would be waiting for is never written for a queued prompt, so no timeout is long enough. Re-sending just double-delivers once the worker frees up. Call `status` first if you want to know before you send: `working` means the next `send` will queue.
+
+`converse` still works against a busy worker: it waits for the shared turn-end and reads the latest turn, which is the queued prompt's. The caveat is that csd cannot see the boundary between the two turns, so if the worker goes idle *between* them you get the earlier turn's reply — check `read-turn` if attribution matters.
+
+Only an *idle* worker that stays silent is a real failure — that is the paste-was-swallowed case, and `send` exits 1 there with the `CSD_SUBMIT_TIMEOUT` hint.
+
 ### After a `converse` timeout, check `status` before `wait-for-turn`
 
 A bare `wait-for-turn` baselines at the *current* end of the events file and waits for the **next** turn-end. If a `converse` timed out, the worker often finishes during the gap — the `stop` has already landed, so a follow-up `wait-for-turn` blocks the entire timeout waiting for a turn that will never start. After a timeout, call `status` first: `idle` means the turn already ended (`read-turn` to read it); `working` means it's still going.
@@ -279,7 +297,7 @@ The `csd` CLI honors a small set of env vars. All are optional.
 | `CSD_CODEX_MODEL` / `CSD_PI_MODEL` | Optional model override for codex / pi workers. Unset = the harness default (codex: `gpt-5.5`; pi: its configured default). |
 | `CSD_CONVERSE_DIAG_FILE` | When set, `csd converse` writes a post-mortem diagnostic on timeout — `ps` tree, `tmux capture-pane`, last 30 lines of the worker's session JSONL, last 20 lines of the csd events JSONL — to this path, then emits a `csd-diagnostic: <path>` pointer to stderr. The file is overwritten on each timeout. Unset = no diagnostic file. Useful when wrapping csd in a harness that can ship the file off-box before the worker is reaped. |
 | `CSD_WORKER_DIR` | Override the worker dir (default `/tmp/csd-workers`). The back-compat `/tmp/claude-workers` symlink is only created when the default is in use. |
-| `CSD_SUBMIT_TIMEOUT` / `CSD_SUBMIT_RETRY_INTERVAL` | `send`: seconds to wait for the worker to confirm a pasted prompt (default `10`) and seconds between retry-Enter resends (default `2`). Raise the timeout if a slow tmux session drops the paste. |
+| `CSD_SUBMIT_TIMEOUT` / `CSD_SUBMIT_RETRY_INTERVAL` | `send`: seconds to wait for the worker to confirm a pasted prompt (default `10`) and seconds between retry-Enter resends (default `2`). Raise the timeout if a slow tmux session drops the paste. Raising it does **not** help a worker that is mid-turn — that prompt is queued, and a queued prompt never emits the event `send` waits for. |
 | `CSD_REGISTER_TIMEOUT` | Seconds the FIRST `send`/`converse` to a derive worker (codex/pi) waits for it to self-register its session id (default `15`). |
 | `HOME` | Used to locate `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` (claude) and the one-time consent file (`~/.claude/.claude-session-driver-consent`). |
 

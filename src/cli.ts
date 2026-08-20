@@ -101,7 +101,9 @@ Per-worker subcommands (require --worker, supplied by the shim):
   converse [--with-turn] <prompt> [timeout=120]
                        Send prompt, wait for turn, return assistant text.
                        --with-turn returns the full markdown turn instead
-  send <prompt>        Send a prompt without waiting for the turn
+  send <prompt>        Send a prompt without waiting for the turn. If the worker
+                       is mid-turn the prompt is queued, not submitted: exits 0
+                       with a note on stderr. Do not re-send
   wait-for-turn [timeout=60] [--after-line N]
                        Block until the next stop OR session_end. By default the
                        baseline is the events file's current end, so it waits for

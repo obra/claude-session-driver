@@ -198,6 +198,54 @@ describe('cmdSend', () => {
     );
   });
 
+  it('errors when the worker is idle and never confirms', async () => {
+    const ef = eventsPath(workerDir, SID);
+    // Last event is a turn-end, so the worker was free to accept the prompt:
+    // silence here really is the issue #20 paste-swallowed case.
+    appendEvent(ef, { event: 'stop', ts: '2025-01-01T00:00:00Z' });
+    const calls: FakeTmuxCalls = { sendText: [], sendEnter: [] };
+    const ctx = makeCtx(workerDir, fakeTmux(true, calls));
+    const result = await cmdSend(ctx, SID, 'hi', {
+      submitTimeout: 0.1,
+      retryInterval: 2,
+      pollMs: 10,
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('did not confirm submission');
+  });
+
+  it('reports success with a note when the worker is mid-turn', async () => {
+    const ef = eventsPath(workerDir, SID);
+    // Pasting into a worker that is inside a turn queues the prompt, and a
+    // queued prompt emits no user_prompt_submit of its own — the event this
+    // loop waits for is never written. Waiting longer cannot help, so this must
+    // not be the #20 error.
+    appendEvent(ef, {
+      event: 'user_prompt_submit',
+      ts: '2025-01-01T00:00:00Z',
+    });
+    appendEvent(ef, {
+      event: 'pre_tool_use',
+      ts: '2025-01-01T00:00:01Z',
+      tool: 'Bash',
+      tool_input: { command: 'ls' },
+    });
+    const calls: FakeTmuxCalls = { sendText: [], sendEnter: [] };
+    const ctx = makeCtx(workerDir, fakeTmux(true, calls));
+    const result = await cmdSend(ctx, SID, 'hi', {
+      submitTimeout: 0.1,
+      retryInterval: 2,
+      pollMs: 10,
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('mid-turn');
+    expect(result.stderr).toContain('queued');
+    // The prompt still went in, so it is there to be submitted at turn end.
+    expect(calls.sendText).toEqual([
+      { name: TMUX_NAME, text: `${PASTE_START}hi${PASTE_END}` },
+    ]);
+  });
+
   it('strips paste markers embedded in the prompt', async () => {
     const ef = eventsPath(workerDir, SID);
     const calls: FakeTmuxCalls = { sendText: [], sendEnter: [] };

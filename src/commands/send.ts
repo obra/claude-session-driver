@@ -1,4 +1,4 @@
-import { readRawLines } from '../core/event-log.js';
+import { classifyStatus, lastEvent, readRawLines } from '../core/event-log.js';
 import { eventsPath } from '../core/paths.js';
 import { resolveSession } from '../core/worker-store.js';
 import { parseEvent } from '../events.js';
@@ -193,12 +193,32 @@ async function pasteText(
 }
 
 /**
+ * True when the worker's last event says it is still inside a turn. Pasting into
+ * a worker in that state gets the prompt QUEUED (Claude Code shows "Press up to
+ * edit queued messages"), and a queued prompt emits no `user_prompt_submit` of
+ * its own — verified against Claude Code 2.1.237: the queued turn runs and
+ * answers, but the only events written are the in-flight turn's, and one `stop`
+ * closes both. Mirrors `status`' classification so the two never disagree.
+ */
+function workerMidTurn(eventFile: string): boolean {
+  const last = lastEvent(eventFile);
+  return last !== null && classifyStatus(last) === 'working';
+}
+
+/**
  * Send Enter and re-send it every `retryInterval` seconds until the worker emits
  * `user_prompt_submit` after `beforeLine`, or `submitTimeout` elapses. Shared by
  * the assign and derive paths.
  *
  * The harness converts the bracketed paste into a pending-input widget
  * asynchronously; an Enter sent too early can be swallowed (issue #20).
+ *
+ * Running out of time is not automatically a failure. If the worker is still
+ * mid-turn the prompt was queued, and a queued prompt never emits its own
+ * `user_prompt_submit` — so the event this loop waits for will never be written,
+ * no matter how high `CSD_SUBMIT_TIMEOUT` is set. Report that as success with a
+ * note rather than the #20 paste-swallowed error, whose "raise the timeout"
+ * advice cannot help there.
  */
 async function confirmSubmission(
   ctx: CommandContext,
@@ -218,6 +238,12 @@ async function confirmSubmission(
   let sinceEnter = Date.now();
   while (!promptSubmittedSince(eventFile, beforeLine)) {
     if (Date.now() >= deadline) {
+      if (workerMidTurn(eventFile)) {
+        return {
+          stderr: `Note: worker '${tmuxName}' is mid-turn, so the prompt was queued behind the running turn. A queued prompt emits no user_prompt_submit of its own, so there is nothing further to confirm; it runs when the current turn ends. Use 'csd converse' (or 'csd wait-for-turn') if you need to wait for the reply.`,
+          code: 0,
+        };
+      }
       return {
         stderr: `Error: prompt pasted but worker did not confirm submission within ${submitTimeout}s (issue #20). The tmux session may be slow to accept the paste; raise CSD_SUBMIT_TIMEOUT to allow more time.`,
         code: 1,
