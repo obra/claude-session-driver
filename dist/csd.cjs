@@ -1398,6 +1398,10 @@ async function pasteText(ctx, tmuxName, prompt) {
   const safe = prompt.split(PASTE_END).join("").split(PASTE_START).join("");
   await ctx.tmux.sendText(tmuxName, PASTE_START + safe + PASTE_END);
 }
+function workerMidTurn(eventFile) {
+  const last = lastEvent(eventFile);
+  return last !== null && classifyStatus(last) === "working";
+}
 async function confirmSubmission(ctx, tmuxName, eventFile, beforeLine, opts) {
   const submitTimeout = opts.submitTimeout ?? envNumber("CSD_SUBMIT_TIMEOUT", 10);
   const retryInterval = opts.retryInterval ?? envNumber("CSD_SUBMIT_RETRY_INTERVAL", 2);
@@ -1407,6 +1411,12 @@ async function confirmSubmission(ctx, tmuxName, eventFile, beforeLine, opts) {
   let sinceEnter = Date.now();
   while (!promptSubmittedSince(eventFile, beforeLine)) {
     if (Date.now() >= deadline) {
+      if (workerMidTurn(eventFile)) {
+        return {
+          stderr: `Note: worker '${tmuxName}' is mid-turn, so the prompt was queued behind the running turn. A queued prompt emits no user_prompt_submit of its own, so there is nothing further to confirm; it runs when the current turn ends. Use 'csd converse' (or 'csd wait-for-turn') if you need to wait for the reply.`,
+          code: 0
+        };
+      }
       return {
         stderr: `Error: prompt pasted but worker did not confirm submission within ${submitTimeout}s (issue #20). The tmux session may be slow to accept the paste; raise CSD_SUBMIT_TIMEOUT to allow more time.`,
         code: 1
@@ -1989,7 +1999,9 @@ Per-worker subcommands (require --worker, supplied by the shim):
   converse [--with-turn] <prompt> [timeout=120]
                        Send prompt, wait for turn, return assistant text.
                        --with-turn returns the full markdown turn instead
-  send <prompt>        Send a prompt without waiting for the turn
+  send <prompt>        Send a prompt without waiting for the turn. If the worker
+                       is mid-turn the prompt is queued, not submitted: exits 0
+                       with a note on stderr. Do not re-send
   wait-for-turn [timeout=60] [--after-line N]
                        Block until the next stop OR session_end. By default the
                        baseline is the events file's current end, so it waits for

@@ -24,6 +24,7 @@ const SID = 'sid-converse';
 const TMUX_NAME = 'converse-worker';
 const CWD = '/home/user/project';
 
+const EARLIER_PROMPT = '{"type":"user","message":{"content":"earlier prompt"}}';
 const ASSISTANT_BEFORE =
   '{"type":"assistant","message":{"content":[{"type":"text","text":"earlier reply"}]}}';
 const USER_PROMPT = '{"type":"user","message":{"content":"do the thing"}}';
@@ -161,6 +162,75 @@ describe('cmdConverse', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('**Prompt:** do the thing');
     expect(result.stdout).toContain('the fresh answer');
+  });
+
+  it('reaches the reply when send had to queue the prompt', async () => {
+    const ef = eventsPath(workerDir, SID);
+    // Worker mid-turn: send can only queue, and returns 0 with a note. The
+    // queued turn emits no events of its own — one `stop` closes both turns —
+    // so converse must still get there off that shared turn-end.
+    appendEvent(ef, {
+      event: 'user_prompt_submit',
+      ts: '2025-01-01T00:00:00Z',
+    });
+    appendEvent(ef, {
+      event: 'pre_tool_use',
+      ts: '2025-01-01T00:00:01Z',
+      tool: 'Bash',
+      tool_input: { command: 'ping -c 45 127.0.0.1' },
+    });
+    writeTranscript(home, [EARLIER_PROMPT, ASSISTANT_BEFORE].join('\n'));
+
+    let scheduled = false;
+    const timers: NodeJS.Timeout[] = [];
+    const tmux: Tmux = {
+      async hasSession() {
+        return true;
+      },
+      async killSession() {},
+      async capturePane() {
+        return '';
+      },
+      async capturePaneFull() {
+        return '';
+      },
+      async sendText() {},
+      async sendEnter() {
+        if (scheduled) return;
+        scheduled = true;
+        // No user_prompt_submit for the queued prompt: it just runs, and a
+        // single stop lands once the worker finally goes idle.
+        timers.push(
+          setTimeout(() => {
+            writeTranscript(
+              home,
+              [
+                EARLIER_PROMPT,
+                ASSISTANT_BEFORE,
+                USER_PROMPT,
+                ASSISTANT_AFTER,
+              ].join('\n'),
+            );
+            appendEvent(ef, { event: 'stop', ts: '2025-01-01T00:00:04Z' });
+          }, 120),
+        );
+      },
+      async sendKey() {},
+      async newSession() {},
+      async respawnPane() {},
+    };
+
+    const ctx = makeCtx(workerDir, home, tmux);
+    try {
+      const result = await cmdConverse(ctx, SID, 'do the thing', {
+        ...fastOpts,
+        sendOpts: { submitTimeout: 0.05, retryInterval: 2, pollMs: 5 },
+      });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('the fresh answer');
+    } finally {
+      for (const t of timers) clearTimeout(t);
+    }
   });
 
   it('errors when meta has no cwd', async () => {
