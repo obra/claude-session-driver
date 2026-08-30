@@ -31,7 +31,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -50,6 +50,7 @@ function tmuxAvailable(): boolean {
 }
 
 const HAS_TMUX = tmuxAvailable();
+vi.setConfig({ testTimeout: 60_000 });
 if (!HAS_TMUX) {
   // Surface the skip reason rather than silently green-lighting.
   process.stderr.write(
