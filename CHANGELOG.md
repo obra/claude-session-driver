@@ -8,11 +8,19 @@
   complete canonical path, stores an owner-only record behind a hashed filename
   using an atomic same-directory rename, and never writes `~/.claude.json`.
 - Claude `launch` and `adopt` now watch for the workspace trust dialog throughout
-  the complete start window. A granted workspace is confirmed; an ungranted one
-  fails immediately with worker teardown and an exact grant command instead of
-  waiting for the generic 30-second timeout. Home-directory prompts are handled
-  on every launch when home itself is granted. Separate prompts such as external
-  `CLAUDE.md` imports are never authorized by this grant.
+  the complete start window. Detection requires the positive label and one of
+  two known cancel labels in the same pane, tolerates whitespace, and otherwise
+  fails closed without sending Enter; version upgrades require a startup smoke.
+  A granted workspace is confirmed at most once per startup attempt. An
+  ungranted one fails immediately with an exact grant command instead of waiting
+  for the generic 30-second timeout. Launch cleans its new worker state; adopt
+  preserves inherited tmux/events/shim and restores inherited metadata on both
+  trust and timeout failures.
+- A CSD workspace grant now documents its narrow boundary: it authorizes only
+  pressing the recognized prompt. Claude's native non-home path trust persists
+  independently after acceptance and is not revoked by removing the CSD grant
+  or changing repository contents; home-directory trust remains session-only.
+  Separate prompts such as external `CLAUDE.md` imports are never authorized.
 - Claude Code `StopFailure` hook support. CSD records a `stop_failure` event
   with the prompt and transcript identifiers, opaque provider error type,
   bounded error details, and bounded rendered error message.

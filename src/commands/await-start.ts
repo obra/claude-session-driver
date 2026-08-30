@@ -1,7 +1,6 @@
+import { renderCsdCommand } from '../core/csd-command.js';
 import { readRawLines } from '../core/event-log.js';
 import { eventsPath } from '../core/paths.js';
-import { shellQuote } from '../core/shell.js';
-import { removeWorker } from '../core/worker-store.js';
 import { hasWorkspaceTrustGrant } from '../core/workspace-trust.js';
 import { parseEvent } from '../events.js';
 import type { CommandContext } from './context.js';
@@ -25,14 +24,14 @@ export interface AwaitStartOpts {
   pollMs?: number;
 }
 
-const WORKSPACE_TRUST_PROMPT =
-  /trust this folder|trust the files in this folder/i;
+const WORKSPACE_TRUST_CONFIRM = /yes,\s*i\s+trust\s+this\s+folder/i;
+const WORKSPACE_TRUST_CANCEL =
+  /no,\s*(?:exit|continue\s+without\s+these\s+permissions)/i;
 
-function grantCommand(csdPath: string, cwd: string): string {
-  const command = /\.[cm]?js$/.test(csdPath)
-    ? `node ${shellQuote(csdPath)}`
-    : shellQuote(csdPath);
-  return `${command} grant-workspace-trust ${shellQuote(cwd)}`;
+function isWorkspaceTrustPrompt(pane: string): boolean {
+  return (
+    WORKSPACE_TRUST_CONFIRM.test(pane) && WORKSPACE_TRUST_CANCEL.test(pane)
+  );
 }
 
 /**
@@ -62,7 +61,7 @@ function paneTail(pane: string, n: number): string {
 /**
  * Block until the worker emits `session_start`, watching for trust prompts for
  * the full proof-of-life window. A prompt is accepted only for a CSD-granted
- * canonical workspace; otherwise the worker is torn down immediately.
+ * canonical workspace; otherwise failure is returned immediately to the owner.
  *
  * Lives in the command layer (not the driver) because it needs `ctx.tmux`
  * (capture/sendEnter) and `ctx.workerDir` (the events file) — context the
@@ -70,8 +69,8 @@ function paneTail(pane: string, n: number): string {
  * command calls this directly for claude; Phase B/C will generalize the
  * proof-of-life wait through the driver for codex/pi.
  *
- * On timeout it tears the worker down (kill session, remove meta+events+shim)
- * and returns `started: false` with the failure text for the caller to print.
+ * This observer never tears worker state down: launch/adopt own different
+ * resources and must apply their own rollback policy when it returns failure.
  */
 export async function awaitSessionStart(
   ctx: CommandContext,
@@ -96,27 +95,28 @@ export async function awaitSessionStart(
     } catch {
       // Pane capture can race startup; keep waiting for the event proof.
     }
-    if (!workspaceTrustHandled && WORKSPACE_TRUST_PROMPT.test(pane)) {
+    if (!workspaceTrustHandled && isWorkspaceTrustPrompt(pane)) {
       if (!hasWorkspaceTrustGrant(ctx.home, opts.cwd)) {
-        await ctx.tmux.killSession(tmuxName);
-        removeWorker(ctx.workerDir, sessionId, tmuxName);
         return {
           started: false,
           failureMessage: [
             `Error: Claude requires workspace trust for ${opts.cwd}.`,
             'CSD did not accept the prompt because this canonical workspace has no grant.',
-            `Run interactively: ${grantCommand(opts.csdPath, opts.cwd)}`,
+            `Run interactively: ${renderCsdCommand(opts.csdPath, ['grant-workspace-trust', opts.cwd])}`,
             'Then launch or adopt the worker again.',
           ].join('\n'),
         };
       }
       await ctx.tmux.sendEnter(tmuxName);
+      // Safety latch: one recognized prompt in this startup attempt triggers
+      // at most one Enter. Never retry blindly if Claude stays on screen or
+      // changes its UI.
       workspaceTrustHandled = true;
     }
     await sleep(pollMs);
   }
 
-  // Timeout: capture the pane tail, tear down, and hand the error to the caller.
+  // Timeout: capture the pane tail and hand the error to the resource owner.
   let tail = '';
   try {
     tail = paneTail(await ctx.tmux.capturePane(tmuxName), 20);
@@ -133,9 +133,6 @@ export async function awaitSessionStart(
       '----------',
     );
   }
-
-  await ctx.tmux.killSession(tmuxName);
-  removeWorker(ctx.workerDir, sessionId, tmuxName);
 
   return { started: false, failureMessage: lines.join('\n') };
 }

@@ -13,13 +13,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cmdAdopt } from '../src/commands/adopt.js';
 import type { CommandContext } from '../src/commands/context.js';
 import { grantConsent } from '../src/core/consent.js';
-import { appendEvent } from '../src/core/event-log.js';
+import { appendEvent, readRawLines } from '../src/core/event-log.js';
 import { eventsPath, shimPath } from '../src/core/paths.js';
 import type { Tmux } from '../src/core/tmux.js';
 import {
   readHarnessMarker,
   readMeta,
   writeHarnessMarker,
+  writeMeta,
+  writeShim,
 } from '../src/core/worker-store.js';
 import { grantWorkspaceTrust } from '../src/core/workspace-trust.js';
 import { getDriver } from '../src/harness/registry.js';
@@ -77,6 +79,9 @@ function freshState(): FakeTmuxState {
 
 const FAST = { startTimeoutMs: 2000, pollMs: 10 };
 const SID = 'abcd1234-5678-90ab-cdef-1234567890ab';
+const EXIT_TRUST_PROMPT = 'Yes, I trust this folder\nNo, exit';
+const CONTINUE_TRUST_PROMPT =
+  'Yes, I trust this folder\nNo, continue without these permissions';
 
 describe('cmdAdopt', () => {
   let workerDir: string;
@@ -289,7 +294,7 @@ describe('cmdAdopt', () => {
     const tmux: Tmux = {
       ...base,
       async capturePane() {
-        return 'Do you trust this folder?';
+        return CONTINUE_TRUST_PROMPT;
       },
       async sendEnter(name) {
         enter.push(name);
@@ -308,13 +313,23 @@ describe('cmdAdopt', () => {
     expect(enter).toEqual(['w1']);
   });
 
-  it('ignores a stale session_start and rejects an ungranted trust prompt', async () => {
+  it('preserves inherited tmux/meta/events/shim on an ungranted trust prompt', async () => {
     grantConsent(home);
     seedTranscript();
+    const oldMeta = {
+      tmux_name: 'w1',
+      session_id: SID,
+      cwd,
+      harness: 'claude',
+      started_at: 'old',
+      invocation: ['old'],
+    };
+    writeMeta(workerDir, oldMeta);
     appendEvent(eventsPath(workerDir, SID), {
       event: 'session_start',
       ts: 'old',
     });
+    writeShim(workerDir, 'w1', '/old/csd.cjs');
     const state = freshState();
     state.hasSession = true;
     const enter: string[] = [];
@@ -323,7 +338,7 @@ describe('cmdAdopt', () => {
     const tmux: Tmux = {
       ...base,
       async capturePane() {
-        return 'Do you trust this folder?';
+        return EXIT_TRUST_PROMPT;
       },
       async sendEnter(name) {
         enter.push(name);
@@ -343,9 +358,45 @@ describe('cmdAdopt', () => {
     expect(result.stderr).toContain('requires workspace trust');
     expect(state.respawnPane).toHaveLength(1);
     expect(enter).toEqual([]);
+    expect(killed).toEqual([]);
+    expect(readMeta(workerDir, SID)).toEqual(oldMeta);
+    expect(readRawLines(eventsPath(workerDir, SID))).toHaveLength(1);
+    expect(existsSync(shimPath(workerDir, 'w1'))).toBe(true);
+  });
+
+  it('cleans state created by an ungranted adopt attempt', async () => {
+    grantConsent(home);
+    seedTranscript();
+    const state = freshState();
+    const enter: string[] = [];
+    const killed: string[] = [];
+    const base = fakeTmux(state);
+    const tmux: Tmux = {
+      ...base,
+      async capturePane() {
+        return CONTINUE_TRUST_PROMPT;
+      },
+      async sendEnter(name) {
+        enter.push(name);
+      },
+      async killSession(name) {
+        killed.push(name);
+      },
+    };
+
+    const result = await cmdAdopt(
+      makeCtx(workerDir, home, tmux),
+      { tmuxName: 'w1', cwd, sessionId: SID, extraArgs: [] },
+      { ...baseOpts(), ...FAST },
+    );
+
+    expect(result.code).toBe(1);
+    expect(state.newSession).toHaveLength(1);
+    expect(enter).toEqual([]);
     expect(killed).toEqual(['w1']);
     expect(readMeta(workerDir, SID)).toBeNull();
     expect(existsSync(eventsPath(workerDir, SID))).toBe(false);
+    expect(existsSync(shimPath(workerDir, 'w1'))).toBe(false);
   });
 
   it('ignores a stale session_start and succeeds on the new attempt event', async () => {
@@ -381,12 +432,62 @@ describe('cmdAdopt', () => {
     expect(state.respawnPane).toHaveLength(1);
   });
 
-  it('pre-writes the meta before launch and tears it down on proof-of-life failure', async () => {
+  it('preserves inherited tmux/meta/events/shim on proof-of-life timeout', async () => {
+    grantConsent(home);
+    seedTranscript();
+    const oldMeta = {
+      tmux_name: 'w1',
+      session_id: SID,
+      cwd,
+      harness: 'claude',
+      started_at: 'old',
+    };
+    writeMeta(workerDir, oldMeta);
+    appendEvent(eventsPath(workerDir, SID), {
+      event: 'session_start',
+      ts: 'old',
+    });
+    writeShim(workerDir, 'w1', '/old/csd.cjs');
+    const state = freshState();
+    state.hasSession = true;
+    const killed: string[] = [];
+    const base = fakeTmux(state);
+    const tmux: Tmux = {
+      ...base,
+      async killSession(name) {
+        killed.push(name);
+      },
+    };
+    const result = await cmdAdopt(
+      makeCtx(workerDir, home, tmux),
+      { tmuxName: 'w1', cwd, sessionId: SID, extraArgs: [] },
+      { ...baseOpts(), startTimeoutMs: 40, pollMs: 10 },
+    );
+
+    expect(result.code).toBe(1);
+    expect(state.respawnPane).toHaveLength(1);
+    expect(killed).toEqual([]);
+    expect(readMeta(workerDir, SID)).toEqual(oldMeta);
+    expect(readRawLines(eventsPath(workerDir, SID))).toHaveLength(1);
+    expect(existsSync(shimPath(workerDir, 'w1'))).toBe(true);
+  });
+
+  it('cleans tmux/meta/events created by a timed-out adopt attempt', async () => {
     grantConsent(home);
     seedTranscript();
     const state = freshState();
-    // The worker never emits session_start, so the wait times out.
-    const ctx = makeCtx(workerDir, home, fakeTmux(state));
+    const killed: string[] = [];
+    // The worker emits another event but never session_start, so it times out.
+    const base = fakeTmux(state, () => {
+      appendEvent(eventsPath(workerDir, SID), { event: 'stop', ts: 'T' });
+    });
+    const tmux: Tmux = {
+      ...base,
+      async killSession(name) {
+        killed.push(name);
+      },
+    };
+    const ctx = makeCtx(workerDir, home, tmux);
     const result = await cmdAdopt(
       ctx,
       { tmuxName: 'w1', cwd, sessionId: SID, extraArgs: [] },
@@ -396,7 +497,9 @@ describe('cmdAdopt', () => {
     expect(result.stderr).toContain(
       'Error: Worker session failed to start within 30 seconds',
     );
-    // Teardown removed the pre-written meta.
+    expect(killed).toEqual(['w1']);
     expect(readMeta(workerDir, SID)).toBeNull();
+    expect(existsSync(eventsPath(workerDir, SID))).toBe(false);
+    expect(existsSync(shimPath(workerDir, 'w1'))).toBe(false);
   });
 });

@@ -18,6 +18,9 @@ function tmpDir(): string {
 const SID = 'sid-await';
 const TMUX_NAME = 'await-worker';
 const CWD = '/home/user/project';
+const EXIT_TRUST_PROMPT = 'Yes, I trust this folder\nNo, exit';
+const CONTINUE_TRUST_PROMPT =
+  'Yes,\n  I trust this folder\nNo, continue\n  without these permissions';
 const FAST = {
   cwd: CWD,
   csdPath: '/usr/local/bin/csd',
@@ -153,7 +156,7 @@ describe('awaitSessionStart', () => {
     // Pane shows the trust prompt; once Enter is sent, the worker starts.
     const tmux = fakeTmux(
       calls,
-      () => 'Do you trust this folder?',
+      () => EXIT_TRUST_PROMPT,
       () => {
         appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
       },
@@ -177,7 +180,7 @@ describe('awaitSessionStart', () => {
       calls,
       () => {
         captures += 1;
-        return captures >= 4 ? 'Do you trust the files in this folder?' : '';
+        return captures >= 4 ? CONTINUE_TRUST_PROMPT : '';
       },
       () => {
         appendEvent(ef, { event: 'session_start', ts: 'T' });
@@ -195,13 +198,13 @@ describe('awaitSessionStart', () => {
     expect(calls.sendEnter).toEqual([TMUX_NAME]);
   });
 
-  it('fails fast and tears down when a trust prompt has no workspace grant', async () => {
+  it('fails fast without mutating worker state when a recognized trust prompt has no grant', async () => {
     const calls: FakeTmuxCalls = {
       capturePane: [],
       sendEnter: [],
       killSession: [],
     };
-    const tmux = fakeTmux(calls, () => 'Do you trust this folder?');
+    const tmux = fakeTmux(calls, () => EXIT_TRUST_PROMPT);
     const ctx = makeCtx(workerDir, tmux);
     const startedAt = Date.now();
     const result = await awaitSessionStart(ctx, TMUX_NAME, SID, {
@@ -213,13 +216,13 @@ describe('awaitSessionStart', () => {
     if (result.started) throw new Error('expected workspace trust failure');
     expect(Date.now() - startedAt).toBeLessThan(1000);
     expect(calls.sendEnter).toEqual([]);
-    expect(calls.killSession).toEqual([TMUX_NAME]);
+    expect(calls.killSession).toEqual([]);
     expect(result.failureMessage).toContain(CWD);
     expect(result.failureMessage).toContain(
       `/usr/local/bin/csd grant-workspace-trust ${CWD}`,
     );
-    expect(existsSync(metaPath(workerDir, SID))).toBe(false);
-    expect(existsSync(shimPath(workerDir, TMUX_NAME))).toBe(false);
+    expect(existsSync(metaPath(workerDir, SID))).toBe(true);
+    expect(existsSync(shimPath(workerDir, TMUX_NAME))).toBe(true);
   });
 
   it('shell-quotes the exact grant command for paths with spaces', async () => {
@@ -230,7 +233,7 @@ describe('awaitSessionStart', () => {
     };
     const ctx = makeCtx(
       workerDir,
-      fakeTmux(calls, () => 'Do you trust this folder?'),
+      fakeTmux(calls, () => EXIT_TRUST_PROMPT),
     );
     const result = await awaitSessionStart(ctx, TMUX_NAME, SID, {
       cwd: '/workspace with spaces',
@@ -244,6 +247,31 @@ describe('awaitSessionStart', () => {
     expect(result.failureMessage).toContain(
       "node '/plugin path/dist/csd.cjs' grant-workspace-trust '/workspace with spaces'",
     );
+  });
+
+  it('does not treat a historical trust phrase without a cancel label as the prompt', async () => {
+    const calls: FakeTmuxCalls = {
+      capturePane: [],
+      sendEnter: [],
+      killSession: [],
+    };
+    const ctx = makeCtx(
+      workerDir,
+      fakeTmux(
+        calls,
+        () => 'Earlier output mentioned: "Yes, I trust this folder".',
+      ),
+    );
+    grantWorkspaceTrust(ctx.home, CWD);
+
+    const result = await awaitSessionStart(ctx, TMUX_NAME, SID, {
+      ...FAST,
+      startTimeoutMs: 40,
+    });
+
+    expect(result.started).toBe(false);
+    expect(calls.sendEnter).toEqual([]);
+    expect(calls.killSession).toEqual([]);
   });
 
   it('does not auto-accept a different external-import prompt', async () => {
@@ -263,10 +291,10 @@ describe('awaitSessionStart', () => {
     });
     expect(result.started).toBe(false);
     expect(calls.sendEnter).toEqual([]);
-    expect(calls.killSession).toEqual([TMUX_NAME]);
+    expect(calls.killSession).toEqual([]);
   });
 
-  it('times out: kills the session, removes meta+events, returns a failure message', async () => {
+  it('times out without cleanup and returns a failure message to the owner', async () => {
     // No session_start event is ever written, so the wait must time out.
     const calls: FakeTmuxCalls = {
       capturePane: [],
@@ -286,10 +314,10 @@ describe('awaitSessionStart', () => {
     );
     // Pane tail included in the failure message.
     expect(result.failureMessage).toContain('last visible line');
-    // Teardown happened.
-    expect(calls.killSession).toEqual([TMUX_NAME]);
-    expect(existsSync(metaPath(workerDir, SID))).toBe(false);
+    // Resource owners, not the observer, decide how to roll back.
+    expect(calls.killSession).toEqual([]);
+    expect(existsSync(metaPath(workerDir, SID))).toBe(true);
     expect(existsSync(eventsPath(workerDir, SID))).toBe(false);
-    expect(existsSync(shimPath(workerDir, TMUX_NAME))).toBe(false);
+    expect(existsSync(shimPath(workerDir, TMUX_NAME))).toBe(true);
   });
 });

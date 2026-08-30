@@ -249,12 +249,22 @@ Review the normalized path and type that complete path exactly; do not pipe
 `yes` or automate the confirmation. Relaunch after the grant succeeds.
 
 CSD stores its own hashed, owner-only per-workspace grant and does not directly
-edit Claude's `~/.claude.json`; Claude controls its own persistence after the
-prompt is accepted. The grant lets CSD press Enter only on Claude's workspace
-trust dialog. It does not authorize separate security decisions such as
-external `CLAUDE.md` imports. Claude intentionally asks again on every launch
-from the home directory; granting the canonical home path lets CSD confirm that
-workspace prompt each time without weakening other prompts.
+edit Claude's `~/.claude.json`. The grant authorizes only CSD pressing Enter on
+a recognized workspace prompt; it is not Claude's native trust record. For a
+non-home directory, Claude independently persists trust for the canonical path
+after the first acceptance. Removing the CSD grant or changing repository
+contents does not revoke that native path trust. Claude intentionally asks again
+on every launch from the home directory; granting the canonical home path lets
+CSD confirm that workspace prompt each time without weakening other prompts.
+
+The detector requires `Yes, I trust this folder` and either `No, exit` or `No,
+continue without these permissions` in the same pane. Other wording fails
+closed and receives no Enter. Smoke-test launch/adopt after Claude Code upgrades
+that may change this startup UI. On failure, launch removes its newly owned
+worker state; adopt preserves inherited tmux/events/shim and restores inherited
+metadata while removing only state created by the failed attempt. The grant
+does not authorize separate security decisions such as external `CLAUDE.md`
+imports.
 
 ### Claude API failures
 

@@ -1,8 +1,19 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { hasConsent } from '../core/consent.js';
 import { readRawLines } from '../core/event-log.js';
-import { ensureBackCompatSymlink, eventsPath } from '../core/paths.js';
+import {
+  ensureBackCompatSymlink,
+  eventsPath,
+  metaPath,
+  shimPath,
+} from '../core/paths.js';
 import { isoSecondsUtc } from '../core/time.js';
 import {
   readHarnessMarker,
@@ -30,6 +41,53 @@ export interface AdoptArgs {
   extraArgs: string[];
 }
 
+interface AdoptAttemptSnapshot {
+  tmuxExisted: boolean;
+  metaContents: Buffer | null;
+  eventsExisted: boolean;
+  shimExisted: boolean;
+}
+
+async function snapshotAdoptState(
+  ctx: CommandContext,
+  tmuxName: string,
+  sessionId: string,
+): Promise<AdoptAttemptSnapshot> {
+  const metaFile = metaPath(ctx.workerDir, sessionId);
+  return {
+    tmuxExisted: await ctx.tmux.hasSession(tmuxName),
+    metaContents: existsSync(metaFile) ? readFileSync(metaFile) : null,
+    eventsExisted: existsSync(eventsPath(ctx.workerDir, sessionId)),
+    shimExisted: existsSync(shimPath(ctx.workerDir, tmuxName)),
+  };
+}
+
+async function rollbackFailedAdopt(
+  ctx: CommandContext,
+  tmuxName: string,
+  sessionId: string,
+  snapshot: AdoptAttemptSnapshot,
+): Promise<void> {
+  try {
+    if (!snapshot.tmuxExisted) {
+      await ctx.tmux.killSession(tmuxName);
+    }
+  } finally {
+    const metaFile = metaPath(ctx.workerDir, sessionId);
+    if (snapshot.metaContents === null) {
+      rmSync(metaFile, { force: true });
+    } else {
+      writeFileSync(metaFile, snapshot.metaContents);
+    }
+    if (!snapshot.eventsExisted) {
+      rmSync(eventsPath(ctx.workerDir, sessionId), { force: true });
+    }
+    if (!snapshot.shimExisted) {
+      rmSync(shimPath(ctx.workerDir, tmuxName), { force: true });
+    }
+  }
+}
+
 /**
  * Re-attach to an existing Claude session after a reboot. Parity port of bash
  * `cmd_adopt` (csd:791-905). Claude-only: there is no `--harness` flag, so the
@@ -42,8 +100,8 @@ export interface AdoptArgs {
  * by tmux-resurrect), its pane is respawned in place to preserve the window
  * layout; otherwise a new detached session is opened.
  *
- * The proof-of-life wait and its teardown-on-timeout mirror launch; see
- * `cmdLaunch` for the driver-orchestration notes.
+ * The proof-of-life wait mirrors launch, but rollback is ownership-aware:
+ * inherited tmux and files survive a failed resume attempt.
  */
 export async function cmdAdopt(
   ctx: CommandContext,
@@ -89,6 +147,11 @@ export async function cmdAdopt(
     };
   }
 
+  // Snapshot ownership before writing meta or starting/respawning tmux. Adopt
+  // can inherit all four resources from an earlier worker and must not delete
+  // them merely because this resume attempt fails proof-of-life.
+  const preexisting = await snapshotAdoptState(ctx, tmuxName, sessionId);
+
   mkdirSync(ctx.workerDir, { recursive: true });
   mkdirSync(join(ctx.workerDir, 'bin'), { recursive: true });
   ensureBackCompatSymlink(ctx.workerDir);
@@ -125,7 +188,7 @@ export async function cmdAdopt(
   ).length;
 
   let mode: string;
-  if (await ctx.tmux.hasSession(tmuxName)) {
+  if (preexisting.tmuxExisted) {
     mode = 'respawned existing pane';
     await ctx.tmux.respawnPane(tmuxName, cwd, env, argv);
   } else {
@@ -143,6 +206,7 @@ export async function cmdAdopt(
     pollMs: opts.pollMs,
   });
   if (!proof.started) {
+    await rollbackFailedAdopt(ctx, tmuxName, sessionId, preexisting);
     return { stderr: proof.failureMessage, code: 1 };
   }
 

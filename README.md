@@ -78,15 +78,23 @@ csd grant-workspace-trust /path/to/project
 The command resolves the directory with `realpath`, shows the canonical result,
 and requires you to type that complete path exactly. It stores an owner-only,
 hashed per-workspace record under `~/.claude/.claude-session-driver/`; it does
-not directly edit Claude's `~/.claude.json`. When CSD later accepts a prompt,
-Claude Code remains responsible for its own trust persistence semantics.
+not directly edit Claude's `~/.claude.json`. This grant authorizes only CSD's
+single Enter on a recognized workspace prompt; it is not Claude's trust record.
 
-Without a grant, `launch` or `adopt` tears down the new worker as soon as the
-workspace trust prompt appears and prints the exact grant command. With a grant,
-CSD watches for the prompt throughout the full start window and confirms it
-when it appears, including on later launches from the home directory where
-Claude intentionally does not persist trust. A workspace grant never authorizes
-separate prompts such as external `CLAUDE.md` imports.
+For a non-home directory, once CSD accepts the prompt, Claude records its own
+native trust for that canonical path. That native record is independent: later
+removing the CSD grant or changing repository contents does not revoke it. For
+the home directory, Claude intentionally does not persist native trust and asks
+again on every launch, so a home grant lets CSD confirm each new prompt.
+
+CSD recognizes the prompt only when the same pane contains `Yes, I trust this
+folder` and either `No, exit` or `No, continue without these permissions`.
+Anything else fails closed: CSD sends no Enter and eventually reports the
+visible pane on timeout. Smoke-test this detector after Claude Code upgrades
+that may change startup UI wording. Without a grant, `launch` removes its new
+worker; a failed `adopt` rolls back only state created by that attempt and
+preserves inherited tmux, events, shim, and metadata. A workspace grant never
+authorizes separate prompts such as external `CLAUDE.md` imports.
 
 ### Per-worker subcommands
 

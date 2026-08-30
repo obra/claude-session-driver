@@ -20,7 +20,11 @@ import { appendEvent } from '../src/core/event-log.js';
 import { eventsPath, shimPath } from '../src/core/paths.js';
 import { shellQuote } from '../src/core/shell.js';
 import type { Tmux } from '../src/core/tmux.js';
-import { readHarnessMarker, readMeta } from '../src/core/worker-store.js';
+import {
+  readHarnessMarker,
+  readMeta,
+  writeShim,
+} from '../src/core/worker-store.js';
 import { grantWorkspaceTrust } from '../src/core/workspace-trust.js';
 import { getDriver } from '../src/harness/registry.js';
 import { runHook } from '../src/hooks/emit-event.js';
@@ -81,6 +85,9 @@ function freshState(): FakeTmuxState {
 }
 
 const FAST = { startTimeoutMs: 2000, pollMs: 10 };
+const EXIT_TRUST_PROMPT = 'Yes, I trust this folder\nNo, exit';
+const CONTINUE_TRUST_PROMPT =
+  'Yes, I trust this folder\nNo, continue without these permissions';
 
 describe('shellQuote', () => {
   it('leaves simple tokens unquoted', () => {
@@ -284,8 +291,21 @@ describe('cmdLaunch', () => {
   it('fails and tears down when proof-of-life never arrives', async () => {
     grantConsent(home);
     const state = freshState();
-    // newSession succeeds but no session_start is ever emitted.
-    const ctx = makeCtx(workerDir, home, fakeTmux(state));
+    const killed: string[] = [];
+    writeShim(workerDir, 'w1', '/old/csd.cjs');
+    // newSession creates an event log but never emits session_start.
+    const base = fakeTmux(state, () => {
+      const argv = state.newSession[0]!.argv;
+      const sid = argv[argv.indexOf('--session-id') + 1] as string;
+      appendEvent(eventsPath(workerDir, sid), { event: 'stop', ts: 'T' });
+    });
+    const tmux: Tmux = {
+      ...base,
+      async killSession(name) {
+        killed.push(name);
+      },
+    };
+    const ctx = makeCtx(workerDir, home, tmux);
     const result = await cmdLaunch(
       ctx,
       { tmuxName: 'w1', cwd, extraArgs: [], harness: 'claude' },
@@ -295,11 +315,14 @@ describe('cmdLaunch', () => {
     expect(result.stderr).toContain(
       'Error: Worker session failed to start within 30 seconds',
     );
-    // The session was started, then torn down: no meta remains for its sid.
+    // Launch owns the fresh session and all worker state, so failure removes it.
     expect(state.newSession).toHaveLength(1);
     const argv = state.newSession[0]!.argv;
     const sid = argv[argv.indexOf('--session-id') + 1] as string;
+    expect(killed).toEqual(['w1']);
     expect(readMeta(workerDir, sid)).toBeNull();
+    expect(existsSync(eventsPath(workerDir, sid))).toBe(false);
+    expect(existsSync(shimPath(workerDir, 'w1'))).toBe(false);
   });
 
   it('fails fast without Enter when Claude asks to trust an ungranted workspace', async () => {
@@ -311,7 +334,7 @@ describe('cmdLaunch', () => {
     const tmux: Tmux = {
       ...base,
       async capturePane() {
-        return 'Do you trust the files in this folder?';
+        return EXIT_TRUST_PROMPT;
       },
       async sendEnter(name) {
         enter.push(name);
@@ -334,6 +357,8 @@ describe('cmdLaunch', () => {
     const argv = state.newSession[0]!.argv;
     const sid = argv[argv.indexOf('--session-id') + 1] as string;
     expect(readMeta(workerDir, sid)).toBeNull();
+    expect(existsSync(eventsPath(workerDir, sid))).toBe(false);
+    expect(existsSync(shimPath(workerDir, 'w1'))).toBe(false);
   });
 
   it('accepts a granted workspace prompt and continues launch', async () => {
@@ -345,7 +370,7 @@ describe('cmdLaunch', () => {
     const tmux: Tmux = {
       ...base,
       async capturePane() {
-        return 'Do you trust this folder?';
+        return CONTINUE_TRUST_PROMPT;
       },
       async sendEnter(name) {
         enter.push(name);

@@ -885,6 +885,15 @@ function getDriver(id) {
   return driver;
 }
 
+// src/core/csd-command.ts
+function runnableCsd(csdPath) {
+  return /\.[cm]?js$/.test(csdPath) ? `node ${shellQuote(csdPath)}` : shellQuote(csdPath);
+}
+function renderCsdCommand(csdPath, args) {
+  const renderedArgs = args.map(shellQuote).join(" ");
+  return renderedArgs.length > 0 ? `${runnableCsd(csdPath)} ${renderedArgs}` : runnableCsd(csdPath);
+}
+
 // src/core/workspace-trust.ts
 var import_node_crypto = require("crypto");
 var import_node_fs7 = require("fs");
@@ -940,10 +949,10 @@ function grantWorkspaceTrust(home, canonicalCwd) {
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 var DEFAULT_START_TIMEOUT_MS = 3e4;
 var DEFAULT_POLL_MS = 250;
-var WORKSPACE_TRUST_PROMPT = /trust this folder|trust the files in this folder/i;
-function grantCommand(csdPath, cwd) {
-  const command = /\.[cm]?js$/.test(csdPath) ? `node ${shellQuote(csdPath)}` : shellQuote(csdPath);
-  return `${command} grant-workspace-trust ${shellQuote(cwd)}`;
+var WORKSPACE_TRUST_CONFIRM = /yes,\s*i\s+trust\s+this\s+folder/i;
+var WORKSPACE_TRUST_CANCEL = /no,\s*(?:exit|continue\s+without\s+these\s+permissions)/i;
+function isWorkspaceTrustPrompt(pane) {
+  return WORKSPACE_TRUST_CONFIRM.test(pane) && WORKSPACE_TRUST_CANCEL.test(pane);
 }
 function sawSessionStart(eventFile, afterLine) {
   return readRawLines(eventFile).slice(afterLine).some((line) => parseEvent(line)?.event === "session_start");
@@ -966,16 +975,14 @@ async function awaitSessionStart(ctx, tmuxName, sessionId, opts) {
       pane = await ctx.tmux.capturePane(tmuxName);
     } catch {
     }
-    if (!workspaceTrustHandled && WORKSPACE_TRUST_PROMPT.test(pane)) {
+    if (!workspaceTrustHandled && isWorkspaceTrustPrompt(pane)) {
       if (!hasWorkspaceTrustGrant(ctx.home, opts.cwd)) {
-        await ctx.tmux.killSession(tmuxName);
-        removeWorker(ctx.workerDir, sessionId, tmuxName);
         return {
           started: false,
           failureMessage: [
             `Error: Claude requires workspace trust for ${opts.cwd}.`,
             "CSD did not accept the prompt because this canonical workspace has no grant.",
-            `Run interactively: ${grantCommand(opts.csdPath, opts.cwd)}`,
+            `Run interactively: ${renderCsdCommand(opts.csdPath, ["grant-workspace-trust", opts.cwd])}`,
             "Then launch or adopt the worker again."
           ].join("\n")
         };
@@ -1000,8 +1007,6 @@ async function awaitSessionStart(ctx, tmuxName, sessionId, opts) {
       "----------"
     );
   }
-  await ctx.tmux.killSession(tmuxName);
-  removeWorker(ctx.workerDir, sessionId, tmuxName);
   return { started: false, failureMessage: lines.join("\n") };
 }
 
@@ -1080,7 +1085,7 @@ async function capture2(ctx, tmuxName) {
 function consentError(csdPath) {
   return {
     stderr: `Error: claude-session-driver requires one-time consent before launching workers.
-Run: ${csdPath} grant-consent`,
+Run: ${renderCsdCommand(csdPath, ["grant-consent"])}`,
     code: 1
   };
 }
@@ -1091,15 +1096,17 @@ function resolveCwd(cwd) {
   return (0, import_node_fs8.realpathSync)(cwd);
 }
 function renderPanel(opts) {
-  const reproduceArgs = opts.invocation.map(shellQuote).join(" ");
-  const runnableCsd = /\.[cm]?js$/.test(opts.csdPath) ? `node ${shellQuote(opts.csdPath)}` : shellQuote(opts.csdPath);
+  const reproduce = renderCsdCommand(opts.csdPath, [
+    opts.verb,
+    ...opts.invocation
+  ]);
   return [
     opts.header,
     `  tmux:       ${opts.tmuxName}`,
     `  session_id: ${opts.sessionId}`,
     `  cwd:        ${opts.cwd}`,
     `  events:     ${opts.eventsFile}`,
-    `  reproduce: ${runnableCsd} ${opts.verb} ${reproduceArgs}`
+    `  reproduce: ${reproduce}`
   ].join("\n");
 }
 function deriveWorkerHome(workerDir2, tmuxName) {
@@ -1153,6 +1160,11 @@ async function launchAssign(ctx, { driver, tmuxName, cwd, extraArgs, invocation 
     pollMs: opts.pollMs
   });
   if (!proof.started) {
+    try {
+      await ctx.tmux.killSession(tmuxName);
+    } finally {
+      removeWorker(ctx.workerDir, sessionId, tmuxName);
+    }
     return { stderr: proof.failureMessage, code: 1 };
   }
   const shim = writeShim(ctx.workerDir, tmuxName, opts.csdEntry);
@@ -1211,6 +1223,35 @@ async function launchDerive(ctx, { driver, tmuxName, cwd, extraArgs, invocation 
 
 // src/commands/adopt.ts
 var CLAUDE_SESSION_ID = /^[0-9a-fA-F][0-9a-fA-F-]{7,}$/;
+async function snapshotAdoptState(ctx, tmuxName, sessionId) {
+  const metaFile = metaPath(ctx.workerDir, sessionId);
+  return {
+    tmuxExisted: await ctx.tmux.hasSession(tmuxName),
+    metaContents: (0, import_node_fs9.existsSync)(metaFile) ? (0, import_node_fs9.readFileSync)(metaFile) : null,
+    eventsExisted: (0, import_node_fs9.existsSync)(eventsPath(ctx.workerDir, sessionId)),
+    shimExisted: (0, import_node_fs9.existsSync)(shimPath(ctx.workerDir, tmuxName))
+  };
+}
+async function rollbackFailedAdopt(ctx, tmuxName, sessionId, snapshot) {
+  try {
+    if (!snapshot.tmuxExisted) {
+      await ctx.tmux.killSession(tmuxName);
+    }
+  } finally {
+    const metaFile = metaPath(ctx.workerDir, sessionId);
+    if (snapshot.metaContents === null) {
+      (0, import_node_fs9.rmSync)(metaFile, { force: true });
+    } else {
+      (0, import_node_fs9.writeFileSync)(metaFile, snapshot.metaContents);
+    }
+    if (!snapshot.eventsExisted) {
+      (0, import_node_fs9.rmSync)(eventsPath(ctx.workerDir, sessionId), { force: true });
+    }
+    if (!snapshot.shimExisted) {
+      (0, import_node_fs9.rmSync)(shimPath(ctx.workerDir, tmuxName), { force: true });
+    }
+  }
+}
 async function cmdAdopt(ctx, args, opts) {
   const { tmuxName, sessionId, extraArgs } = args;
   const driver = getDriver("claude");
@@ -1238,6 +1279,7 @@ async function cmdAdopt(ctx, args, opts) {
       code: 1
     };
   }
+  const preexisting = await snapshotAdoptState(ctx, tmuxName, sessionId);
   (0, import_node_fs9.mkdirSync)(ctx.workerDir, { recursive: true });
   (0, import_node_fs9.mkdirSync)((0, import_node_path7.join)(ctx.workerDir, "bin"), { recursive: true });
   ensureBackCompatSymlink(ctx.workerDir);
@@ -1260,7 +1302,7 @@ async function cmdAdopt(ctx, args, opts) {
     eventsPath(ctx.workerDir, sessionId)
   ).length;
   let mode;
-  if (await ctx.tmux.hasSession(tmuxName)) {
+  if (preexisting.tmuxExisted) {
     mode = "respawned existing pane";
     await ctx.tmux.respawnPane(tmuxName, cwd, env, argv);
   } else {
@@ -1276,6 +1318,7 @@ async function cmdAdopt(ctx, args, opts) {
     pollMs: opts.pollMs
   });
   if (!proof.started) {
+    await rollbackFailedAdopt(ctx, tmuxName, sessionId, preexisting);
     return { stderr: proof.failureMessage, code: 1 };
   }
   const shim = writeShim(ctx.workerDir, tmuxName, opts.csdEntry);
