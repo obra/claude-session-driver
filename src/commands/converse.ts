@@ -1,13 +1,18 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dumpConverseDiag } from '../core/diagnostics.js';
 import { readRawLines } from '../core/event-log.js';
-import { eventsPath } from '../core/paths.js';
+import { eventsPath, shimPath } from '../core/paths.js';
 import type { Runner } from '../core/proc.js';
 import { assistantText, renderTurnForCommand } from '../core/transcript.js';
+import {
+  type ClaudeTranscriptAnchor,
+  captureClaudeTranscriptAnchor,
+  inspectClaudeTerminalTail,
+} from '../harness/claude-terminal-tail.js';
 import type { CommandContext, CommandResult } from './context.js';
 import { resolveWorker } from './context.js';
 import { cmdSend, isDeriveFirst, type SendOpts } from './send.js';
-import { cmdWaitForTurn } from './wait-for-turn.js';
+import { cmdWaitForTurn, formatStopFailure } from './wait-for-turn.js';
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -46,12 +51,12 @@ function readTranscript(file: string): string {
  * detected "did the worker reply?" with claude-only jq counting the assistant
  * text messages; that recognized neither codex rollouts nor pi sessions, so
  * converse always timed out for those harnesses. Here the turn-complete signal
- * is harness-agnostic — `cmdWaitForTurn` blocks on the `stop`/`session_end`
- * event the worker emits after the prompt — and the reply text is extracted by
+ * is harness-agnostic — `cmdWaitForTurn` blocks on a terminal lifecycle event
+ * the worker emits after the prompt — and the reply text is extracted by
  * driving the worker's transcript through `driver.parseTurn` (the same
  * normalized turn model `read-turn` renders), then joining the assistant text.
- * On a wait-for-turn timeout or a no-reply timeout, dumps a diagnostic when
- * `CSD_CONVERSE_DIAG_FILE` is set.
+ * On a wait-for-turn timeout, Claude gets one bounded transcript-tail fallback;
+ * other timeouts dump a diagnostic when `CSD_CONVERSE_DIAG_FILE` is set.
  */
 export async function cmdConverse(
   ctx: CommandContext,
@@ -76,6 +81,7 @@ export async function cmdConverse(
   // sending — then capture the pre-send events line and send.
   const deriveFirst = isDeriveFirst(ctx, worker);
   let afterLine = 0;
+  let transcriptAnchor: ClaudeTranscriptAnchor | null = null;
   if (!deriveFirst) {
     const pre = resolveWorker(ctx, worker);
     if ('code' in pre) return pre;
@@ -86,6 +92,11 @@ export async function cmdConverse(
       };
     }
     afterLine = readRawLines(eventsPath(ctx.workerDir, pre.sid)).length;
+    if (ctx.driver.id === 'claude') {
+      transcriptAnchor = captureClaudeTranscriptAnchor(
+        ctx.driver.transcriptPath(pre.sid, pre.meta.cwd, ctx.home),
+      );
+    }
   }
 
   const sendResult = await cmdSend(ctx, worker, prompt, opts.sendOpts ?? {});
@@ -130,11 +141,57 @@ export async function cmdConverse(
     afterLine,
     pollMs: opts.waitPollMs,
   });
-  if (waitResult.code !== 0) {
-    const diag = await dumpDiag('wait_for_turn_timeout');
+  if (waitResult.code === 3 && waitResult.terminal?.event === 'stop_failure') {
     return {
-      stderr: `Error: Worker did not finish within ${timeout}s${diag}`,
-      code: 1,
+      stderr: formatStopFailure(
+        meta.tmux_name,
+        sid,
+        waitResult.terminal,
+        eventFile,
+      ),
+      code: 3,
+    };
+  }
+  if (waitResult.code !== 0) {
+    if (waitResult.code === 124 && ctx.driver.id === 'claude') {
+      const fallback = inspectClaudeTerminalTail(logFile, transcriptAnchor);
+      if (fallback.kind === 'api_error') {
+        const lines = [
+          'Error: Claude turn failed',
+          `worker: ${meta.tmux_name}`,
+          `session_id: ${sid}`,
+          'error: transcript_marked_api_error',
+          `evidence_source: ${fallback.evidenceSource}`,
+          `transcript: ${fallback.transcriptPath}`,
+          `terminal_record_uuid: ${fallback.terminalRecordUuid}`,
+        ];
+        if (fallback.lastAssistantMessage !== undefined) {
+          lines.push(
+            `last_assistant_message: ${fallback.lastAssistantMessage}`,
+          );
+        }
+        lines.push('worker remains reusable');
+        return { stderr: lines.join('\n'), code: 3 };
+      }
+    }
+    const diag = await dumpDiag('wait_for_turn_timeout');
+    const lines = [
+      `Error: Worker did not finish within ${timeout}s`,
+      `worker: ${meta.tmux_name}`,
+      `session_id: ${sid}`,
+      `transcript: ${logFile}`,
+      `events: ${eventFile}`,
+    ];
+    if (waitResult.code === 124 && waitResult.afterLine !== undefined) {
+      lines.push(
+        `retry_after_line: ${waitResult.afterLine}`,
+        `retry: ${shimPath(ctx.workerDir, meta.tmux_name)} wait-for-turn --after-line ${waitResult.afterLine}`,
+      );
+    }
+    lines.push('worker remains reusable');
+    return {
+      stderr: lines.join('\n') + diag,
+      code: waitResult.code === 124 ? 124 : waitResult.code,
     };
   }
 

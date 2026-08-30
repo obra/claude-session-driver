@@ -3,7 +3,12 @@ import { appendEvent } from '../core/event-log.js';
 import { eventsPath, metaPath, workerDir } from '../core/paths.js';
 import { isoSecondsUtc } from '../core/time.js';
 import { writeMeta } from '../core/worker-store.js';
-import type { EventName, WorkerEvent } from '../events.js';
+import type {
+  BackgroundTaskEvidence,
+  EventName,
+  SessionCronEvidence,
+  WorkerEvent,
+} from '../events.js';
 
 /**
  * The session lifecycle hook for Claude Code (and Codex). Claude/Codex invoke
@@ -44,6 +49,7 @@ interface HookOptions {
 const EVENT_MAP: Record<string, EventName> = {
   SessionStart: 'session_start',
   Stop: 'stop',
+  StopFailure: 'stop_failure',
   UserPromptSubmit: 'user_prompt_submit',
   SessionEnd: 'session_end',
   PreToolUse: 'pre_tool_use',
@@ -58,6 +64,74 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 
 function asString(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+export const MAX_EVENT_TEXT_LENGTH = 8192;
+
+function boundedString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v.slice(0, MAX_EVENT_TEXT_LENGTH) : undefined;
+}
+
+function optionalString(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+function terminalEvidence(payload: Record<string, unknown>): {
+  prompt_id?: string;
+  transcript_path?: string;
+  last_assistant_message?: string;
+} {
+  const promptId = optionalString(payload.prompt_id);
+  const transcriptPath = optionalString(payload.transcript_path);
+  const lastAssistantMessage = boundedString(payload.last_assistant_message);
+  return {
+    ...(promptId === undefined ? {} : { prompt_id: promptId }),
+    ...(transcriptPath === undefined
+      ? {}
+      : { transcript_path: transcriptPath }),
+    ...(lastAssistantMessage === undefined
+      ? {}
+      : { last_assistant_message: lastAssistantMessage }),
+  };
+}
+
+function backgroundTasks(v: unknown): BackgroundTaskEvidence[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.flatMap((item) => {
+    const record = asRecord(item);
+    if (record === null) return [];
+    const id = optionalString(record.id);
+    const type = optionalString(record.type);
+    const status = optionalString(record.status);
+    return [
+      {
+        ...(id === undefined ? {} : { id }),
+        ...(type === undefined ? {} : { type }),
+        ...(status === undefined ? {} : { status }),
+      },
+    ];
+  });
+}
+
+function sessionCrons(v: unknown): SessionCronEvidence[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.flatMap((item) => {
+    const record = asRecord(item);
+    if (record === null) return [];
+    const id = optionalString(record.id);
+    const schedule = optionalString(record.schedule);
+    const recurring =
+      typeof record.recurring === 'boolean' ? record.recurring : undefined;
+    const prompt = boundedString(record.prompt);
+    return [
+      {
+        ...(id === undefined ? {} : { id }),
+        ...(schedule === undefined ? {} : { schedule }),
+        ...(recurring === undefined ? {} : { recurring }),
+        ...(prompt === undefined ? {} : { prompt }),
+      },
+    ];
+  });
 }
 
 /**
@@ -116,9 +190,7 @@ export function runHook(opts: HookOptions): HookResult {
 
   appendEvent(eventsPath(opts.workerDir, sessionId), worker);
 
-  // Stop must approve so the hook never blocks the agent.
-  const stdout = hookEventName === 'Stop' ? '{"decision":"approve"}' : '';
-  return { stdout, appended: worker };
+  return { stdout: '', appended: worker };
 }
 
 function buildEvent(
@@ -143,6 +215,34 @@ function buildEvent(
     }
     case 'post_tool_use':
       return { event, ts, tool: asString(payload.tool_name) };
+    case 'stop': {
+      const stopHookActive =
+        typeof payload.stop_hook_active === 'boolean'
+          ? payload.stop_hook_active
+          : undefined;
+      const tasks = backgroundTasks(payload.background_tasks);
+      const crons = sessionCrons(payload.session_crons);
+      return {
+        event,
+        ts,
+        ...terminalEvidence(payload),
+        ...(stopHookActive === undefined
+          ? {}
+          : { stop_hook_active: stopHookActive }),
+        ...(tasks === undefined ? {} : { background_tasks: tasks }),
+        ...(crons === undefined ? {} : { session_crons: crons }),
+      };
+    }
+    case 'stop_failure': {
+      const errorDetails = boundedString(payload.error_details);
+      return {
+        event,
+        ts,
+        ...terminalEvidence(payload),
+        error: asString(payload.error),
+        ...(errorDetails === undefined ? {} : { error_details: errorDetails }),
+      };
+    }
     default:
       return { event, ts };
   }

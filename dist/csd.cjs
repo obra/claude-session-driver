@@ -837,6 +837,7 @@ var EVENT_NAMES = [
   "pre_tool_use",
   "post_tool_use",
   "stop",
+  "stop_failure",
   "session_end"
 ];
 function parseEvent(line) {
@@ -872,6 +873,7 @@ function classifyStatus(last) {
     case "post_tool_use":
       return "working";
     case "stop":
+    case "stop_failure":
     case "session_start":
       return "idle";
     default: {
@@ -1206,7 +1208,7 @@ async function cmdAdopt(ctx, args, opts) {
 }
 
 // src/commands/converse.ts
-var import_node_fs11 = require("fs");
+var import_node_fs12 = require("fs");
 
 // src/core/diagnostics.ts
 var import_node_fs9 = require("fs");
@@ -1301,6 +1303,267 @@ async function dumpConverseDiag(opts) {
     return false;
   }
   return true;
+}
+
+// src/harness/claude-terminal-tail.ts
+var import_node_crypto2 = require("crypto");
+var import_node_fs10 = require("fs");
+var import_node_util = require("util");
+var MAX_TRANSCRIPT_CAPTURE_BYTES = 1024 * 1024;
+var MAX_TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
+var decoder = new import_node_util.TextDecoder("utf-8", { fatal: true });
+var CLAUDE_CHAIN_TYPES = /* @__PURE__ */ new Set([
+  "user",
+  "assistant",
+  "attachment",
+  "system",
+  "progress"
+]);
+function readExact(fd, start, length) {
+  const buffer = Buffer.alloc(length);
+  let offset = 0;
+  try {
+    while (offset < length) {
+      const count = (0, import_node_fs10.readSync)(
+        fd,
+        buffer,
+        offset,
+        length - offset,
+        start + offset
+      );
+      if (count === 0) return null;
+      offset += count;
+    }
+  } catch {
+    return null;
+  }
+  return buffer;
+}
+function parseRecord(bytes) {
+  try {
+    const value = JSON.parse(decoder.decode(bytes));
+    return typeof value === "object" && value !== null ? value : null;
+  } catch {
+    return null;
+  }
+}
+function digest(bytes) {
+  return (0, import_node_crypto2.createHash)("sha256").update(bytes).digest("hex");
+}
+function openTranscript(file) {
+  try {
+    const fd = (0, import_node_fs10.openSync)(file, "r");
+    try {
+      const stat = (0, import_node_fs10.fstatSync)(fd);
+      if (!stat.isFile()) {
+        (0, import_node_fs10.closeSync)(fd);
+        return null;
+      }
+      return { fd, stat };
+    } catch {
+      (0, import_node_fs10.closeSync)(fd);
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+function captureClaudeTranscriptAnchor(file) {
+  const opened = openTranscript(file);
+  if (opened === null) return null;
+  const { fd, stat } = opened;
+  try {
+    if (stat.size === 0) return null;
+    const windowStart = Math.max(0, stat.size - MAX_TRANSCRIPT_CAPTURE_BYTES);
+    const window = readExact(fd, windowStart, stat.size - windowStart);
+    if (window === null) return null;
+    let cursor = 0;
+    if (windowStart > 0) {
+      const firstNewline = window.indexOf(10);
+      if (firstNewline < 0) return null;
+      cursor = firstNewline + 1;
+    }
+    let last;
+    while (cursor < window.length) {
+      const newline = window.indexOf(10, cursor);
+      const lineEnd = newline < 0 ? window.length : newline;
+      if (lineEnd > cursor) {
+        const parsed = parseRecord(window.subarray(cursor, lineEnd));
+        if (parsed === null) return null;
+        if (typeof parsed.uuid === "string") {
+          if (parsed.isSidechain === true || typeof parsed.type !== "string" || !CLAUDE_CHAIN_TYPES.has(parsed.type)) {
+            return null;
+          }
+          last = {
+            uuid: parsed.uuid,
+            lineStart: windowStart + cursor,
+            lineEnd: windowStart + lineEnd,
+            afterOffset: windowStart + lineEnd + (newline < 0 ? 0 : 1),
+            newlineTerminated: newline >= 0
+          };
+        }
+      }
+      if (newline < 0) break;
+      cursor = newline + 1;
+    }
+    if (last === void 0) return null;
+    const snapshotStart = last.lineStart - windowStart;
+    return {
+      ...last,
+      capturedSize: stat.size,
+      device: stat.dev,
+      inode: stat.ino,
+      snapshotDigest: digest(window.subarray(snapshotStart))
+    };
+  } finally {
+    (0, import_node_fs10.closeSync)(fd);
+  }
+}
+function parseJsonl(bytes) {
+  const records = [];
+  let cursor = 0;
+  while (cursor < bytes.length) {
+    const newline = bytes.indexOf(10, cursor);
+    const lineEnd = newline < 0 ? bytes.length : newline;
+    if (lineEnd > cursor) {
+      const parsed = parseRecord(bytes.subarray(cursor, lineEnd));
+      if (parsed === null) return null;
+      records.push(parsed);
+    }
+    if (newline < 0) break;
+    cursor = newline + 1;
+  }
+  return records;
+}
+function assistantContent(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item) => typeof item === "object" && item !== null
+  );
+}
+function message(record) {
+  const value = record.message;
+  return typeof value === "object" && value !== null ? value : {};
+}
+function substantiveAssistant(record) {
+  if (record.type !== "assistant") return false;
+  const content = message(record).content;
+  if (typeof content === "string") return content.length > 0;
+  return assistantContent(content).some(
+    (block) => block.type === "tool_use" || block.type === "text" && typeof block.text === "string" && block.text.length > 0
+  );
+}
+function assistantText2(record) {
+  const content = message(record).content;
+  if (typeof content === "string")
+    return content.length > 0 ? content : void 0;
+  const text = assistantContent(content).filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text).join("");
+  return text.length > 0 ? text : void 0;
+}
+function descendsFromAnchor(candidate, anchor, byUuid) {
+  const seen = /* @__PURE__ */ new Set();
+  let parent = candidate.parentUuid;
+  while (typeof parent === "string") {
+    if (parent === anchor.uuid) return null;
+    if (seen.has(parent)) return "api_error_not_descendant";
+    seen.add(parent);
+    const record = byUuid.get(parent);
+    if (record === void 0) return "api_error_not_descendant";
+    if (record.isSidechain === true) return "sidechain_api_error";
+    if (typeof record.type !== "string" || !CLAUDE_CHAIN_TYPES.has(record.type)) {
+      return "unknown_chain_record";
+    }
+    parent = record.parentUuid;
+  }
+  return "api_error_not_descendant";
+}
+function indeterminate(file, reason) {
+  return { kind: "indeterminate", reason, transcriptPath: file };
+}
+function inspectClaudeTerminalTail(file, anchor) {
+  if (anchor === null) return indeterminate(file, "anchor_absent");
+  const opened = openTranscript(file);
+  if (opened === null) return indeterminate(file, "transcript_unreadable");
+  const { fd, stat } = opened;
+  try {
+    if (stat.dev !== anchor.device || stat.ino !== anchor.inode) {
+      return indeterminate(file, "transcript_replaced");
+    }
+    if (stat.size < anchor.capturedSize || stat.size < anchor.afterOffset) {
+      return indeterminate(file, "transcript_rewritten");
+    }
+    if (!anchor.newlineTerminated && stat.size > anchor.capturedSize) {
+      return indeterminate(file, "anchor_mismatch");
+    }
+    const snapshotLength = anchor.capturedSize - anchor.lineStart;
+    if (snapshotLength > MAX_TRANSCRIPT_CAPTURE_BYTES) {
+      return indeterminate(file, "anchor_mismatch");
+    }
+    const snapshot = readExact(fd, anchor.lineStart, snapshotLength);
+    if (snapshot === null) {
+      return indeterminate(file, "transcript_unreadable");
+    }
+    if (digest(snapshot) !== anchor.snapshotDigest) {
+      return indeterminate(file, "transcript_rewritten");
+    }
+    const anchorLength = anchor.lineEnd - anchor.lineStart;
+    const anchorRecord = parseRecord(snapshot.subarray(0, anchorLength));
+    if (anchorRecord?.uuid !== anchor.uuid) {
+      return indeterminate(file, "anchor_mismatch");
+    }
+    const tailLength = stat.size - anchor.afterOffset;
+    if (tailLength > MAX_TRANSCRIPT_TAIL_BYTES) {
+      return indeterminate(file, "tail_too_large");
+    }
+    const tailBytes = readExact(fd, anchor.afterOffset, tailLength);
+    if (tailBytes === null) return indeterminate(file, "transcript_unreadable");
+    const tail = parseJsonl(tailBytes);
+    if (tail === null) return indeterminate(file, "malformed_tail");
+    const byUuid = /* @__PURE__ */ new Map();
+    for (const record of tail) {
+      if (typeof record.uuid !== "string") continue;
+      if (typeof record.type !== "string" || !CLAUDE_CHAIN_TYPES.has(record.type)) {
+        return indeterminate(file, "unknown_chain_record");
+      }
+      if (byUuid.has(record.uuid)) return indeterminate(file, "malformed_tail");
+      byUuid.set(record.uuid, record);
+    }
+    let terminalIndex = -1;
+    for (let index = tail.length - 1; index >= 0; index--) {
+      const candidate = tail[index];
+      if (candidate?.type === "assistant" && candidate.isApiErrorMessage === true && typeof candidate.uuid === "string") {
+        terminalIndex = index;
+        break;
+      }
+    }
+    if (terminalIndex < 0) {
+      return indeterminate(file, "missing_terminal_api_error");
+    }
+    const terminal = tail[terminalIndex];
+    if (terminal.isSidechain === true) {
+      return indeterminate(file, "sidechain_api_error");
+    }
+    const ancestryFailure = descendsFromAnchor(terminal, anchor, byUuid);
+    if (ancestryFailure !== null) return indeterminate(file, ancestryFailure);
+    for (const later of tail.slice(terminalIndex + 1)) {
+      if (substantiveAssistant(later)) {
+        return indeterminate(file, "later_substantive_assistant");
+      }
+      if (later.type === "user") {
+        return indeterminate(file, "later_conversation_record");
+      }
+    }
+    const text = assistantText2(terminal);
+    return {
+      kind: "api_error",
+      evidenceSource: "claude_transcript_tail",
+      transcriptPath: file,
+      terminalRecordUuid: terminal.uuid,
+      ...text === void 0 ? {} : { lastAssistantMessage: text }
+    };
+  } finally {
+    (0, import_node_fs10.closeSync)(fd);
+  }
 }
 
 // src/commands/context.ts
@@ -1422,12 +1685,31 @@ async function confirmSubmission(ctx, tmuxName, eventFile, beforeLine, opts) {
 }
 
 // src/commands/wait-for-turn.ts
-var import_node_fs10 = require("fs");
+var import_node_fs11 = require("fs");
 var sleep5 = (ms) => new Promise((r) => setTimeout(r, ms));
 var isTurnEnd = (line) => {
   const e = parseEvent(line)?.event;
-  return e === "stop" || e === "session_end";
+  return e === "stop" || e === "stop_failure" || e === "session_end";
 };
+function formatStopFailure(worker, sid, event, eventFile) {
+  const lines = [
+    "Error: Claude turn failed",
+    `worker: ${worker}`,
+    `session_id: ${sid}`,
+    `error: ${event.error}`
+  ];
+  if (event.error_details !== void 0) {
+    lines.push(`error_details: ${event.error_details}`);
+  }
+  if (event.last_assistant_message !== void 0) {
+    lines.push(`last_assistant_message: ${event.last_assistant_message}`);
+  }
+  if (event.transcript_path !== void 0) {
+    lines.push(`transcript: ${event.transcript_path}`);
+  }
+  lines.push(`events: ${eventFile}`, "worker remains reusable");
+  return lines.join("\n");
+}
 async function cmdWaitForTurn(ctx, worker, opts) {
   const timeout = opts.timeout ?? 60;
   const pollMs = opts.pollMs ?? 500;
@@ -1435,13 +1717,24 @@ async function cmdWaitForTurn(ctx, worker, opts) {
   if (sid === null) {
     return { stderr: `Error: no worker known as '${worker}'`, code: 1 };
   }
+  const workerName = readMeta(ctx.workerDir, sid)?.tmux_name ?? worker;
   const eventFile = eventsPath(ctx.workerDir, sid);
   const deadline = Date.now() + timeout * 1e3;
-  while (!(0, import_node_fs10.existsSync)(eventFile)) {
+  while (!(0, import_node_fs11.existsSync)(eventFile)) {
     if (Date.now() >= deadline) {
       return {
-        stderr: `Timeout waiting for event file: ${eventFile}`,
-        code: 1
+        stderr: [
+          `Timeout waiting for event file: ${eventFile}`,
+          `worker: ${workerName}`,
+          `session_id: ${sid}`,
+          `retry_after_line: ${opts.afterLine ?? 0}`,
+          `retry: wait-for-turn --after-line ${opts.afterLine ?? 0}`,
+          "worker remains reusable"
+        ].join("\n"),
+        code: 124,
+        afterLine: opts.afterLine ?? 0,
+        eventFile,
+        sid
       };
     }
     await sleep5(pollMs);
@@ -1452,22 +1745,53 @@ async function cmdWaitForTurn(ctx, worker, opts) {
     if (lines.length > linesChecked) {
       const match = lines.slice(linesChecked).find(isTurnEnd);
       if (match !== void 0) {
-        return { stdout: match, code: 0 };
+        const terminal = parseEvent(match);
+        if (terminal?.event === "stop_failure") {
+          return {
+            stderr: formatStopFailure(workerName, sid, terminal, eventFile),
+            code: 3,
+            terminal,
+            afterLine: linesChecked,
+            eventFile,
+            sid
+          };
+        }
+        if (terminal !== null) {
+          return {
+            stdout: match,
+            code: 0,
+            terminal,
+            afterLine: linesChecked,
+            eventFile,
+            sid
+          };
+        }
       }
       linesChecked = lines.length;
     }
     await sleep5(pollMs);
   }
   return {
-    stderr: `Timeout waiting for turn (stop or session_end) after ${timeout}s`,
-    code: 1
+    stderr: [
+      `Timeout waiting for turn (stop, stop_failure, or session_end) after ${timeout}s`,
+      `worker: ${workerName}`,
+      `session_id: ${sid}`,
+      `events: ${eventFile}`,
+      `retry_after_line: ${linesChecked}`,
+      `retry: wait-for-turn --after-line ${linesChecked}`,
+      "worker remains reusable"
+    ].join("\n"),
+    code: 124,
+    afterLine: linesChecked,
+    eventFile,
+    sid
   };
 }
 
 // src/commands/converse.ts
 var sleep6 = (ms) => new Promise((r) => setTimeout(r, ms));
 function readTranscript(file) {
-  return (0, import_node_fs11.existsSync)(file) ? (0, import_node_fs11.readFileSync)(file, "utf8") : "";
+  return (0, import_node_fs12.existsSync)(file) ? (0, import_node_fs12.readFileSync)(file, "utf8") : "";
 }
 async function cmdConverse(ctx, worker, prompt, opts) {
   const timeout = opts.timeout ?? 120;
@@ -1476,6 +1800,7 @@ async function cmdConverse(ctx, worker, prompt, opts) {
   const now = opts.now ?? (() => (/* @__PURE__ */ new Date()).toISOString());
   const deriveFirst = isDeriveFirst(ctx, worker);
   let afterLine = 0;
+  let transcriptAnchor = null;
   if (!deriveFirst) {
     const pre = resolveWorker(ctx, worker);
     if ("code" in pre) return pre;
@@ -1486,6 +1811,11 @@ async function cmdConverse(ctx, worker, prompt, opts) {
       };
     }
     afterLine = readRawLines(eventsPath(ctx.workerDir, pre.sid)).length;
+    if (ctx.driver.id === "claude") {
+      transcriptAnchor = captureClaudeTranscriptAnchor(
+        ctx.driver.transcriptPath(pre.sid, pre.meta.cwd, ctx.home)
+      );
+    }
   }
   const sendResult = await cmdSend(ctx, worker, prompt, opts.sendOpts ?? {});
   if (sendResult.code !== 0) return sendResult;
@@ -1524,11 +1854,57 @@ csd-diagnostic: ${diagDest}` : "";
     afterLine,
     pollMs: opts.waitPollMs
   });
-  if (waitResult.code !== 0) {
-    const diag2 = await dumpDiag("wait_for_turn_timeout");
+  if (waitResult.code === 3 && waitResult.terminal?.event === "stop_failure") {
     return {
-      stderr: `Error: Worker did not finish within ${timeout}s${diag2}`,
-      code: 1
+      stderr: formatStopFailure(
+        meta.tmux_name,
+        sid,
+        waitResult.terminal,
+        eventFile
+      ),
+      code: 3
+    };
+  }
+  if (waitResult.code !== 0) {
+    if (waitResult.code === 124 && ctx.driver.id === "claude") {
+      const fallback = inspectClaudeTerminalTail(logFile, transcriptAnchor);
+      if (fallback.kind === "api_error") {
+        const lines2 = [
+          "Error: Claude turn failed",
+          `worker: ${meta.tmux_name}`,
+          `session_id: ${sid}`,
+          "error: transcript_marked_api_error",
+          `evidence_source: ${fallback.evidenceSource}`,
+          `transcript: ${fallback.transcriptPath}`,
+          `terminal_record_uuid: ${fallback.terminalRecordUuid}`
+        ];
+        if (fallback.lastAssistantMessage !== void 0) {
+          lines2.push(
+            `last_assistant_message: ${fallback.lastAssistantMessage}`
+          );
+        }
+        lines2.push("worker remains reusable");
+        return { stderr: lines2.join("\n"), code: 3 };
+      }
+    }
+    const diag2 = await dumpDiag("wait_for_turn_timeout");
+    const lines = [
+      `Error: Worker did not finish within ${timeout}s`,
+      `worker: ${meta.tmux_name}`,
+      `session_id: ${sid}`,
+      `transcript: ${logFile}`,
+      `events: ${eventFile}`
+    ];
+    if (waitResult.code === 124 && waitResult.afterLine !== void 0) {
+      lines.push(
+        `retry_after_line: ${waitResult.afterLine}`,
+        `retry: ${shimPath(ctx.workerDir, meta.tmux_name)} wait-for-turn --after-line ${waitResult.afterLine}`
+      );
+    }
+    lines.push("worker remains reusable");
+    return {
+      stderr: lines.join("\n") + diag2,
+      code: waitResult.code === 124 ? 124 : waitResult.code
     };
   }
   for (let i = 0; i < postPollCount; i++) {
@@ -1614,13 +1990,13 @@ the session.
 }
 
 // src/commands/status.ts
-var import_node_fs12 = require("fs");
+var import_node_fs13 = require("fs");
 async function computeStatus(ctx, meta) {
   if (!await ctx.tmux.hasSession(meta.tmux_name)) {
     return "gone";
   }
   const ef = eventsPath(ctx.workerDir, meta.session_id);
-  if (!(0, import_node_fs12.existsSync)(ef)) {
+  if (!(0, import_node_fs13.existsSync)(ef)) {
     return "unknown";
   }
   const last = lastEvent(ef);
@@ -1712,7 +2088,7 @@ async function cmdPrune(ctx) {
 }
 
 // src/commands/read-events.ts
-var import_node_fs13 = require("fs");
+var import_node_fs14 = require("fs");
 function filterByType(lines, type) {
   return lines.filter((line) => parseEvent(line)?.event === type);
 }
@@ -1731,7 +2107,7 @@ async function cmdReadEvents(ctx, worker, opts) {
     return { stderr: `Error: no worker known as '${worker}'`, code: 1 };
   }
   const eventFile = eventsPath(ctx.workerDir, sid);
-  if (!(0, import_node_fs13.existsSync)(eventFile)) {
+  if (!(0, import_node_fs14.existsSync)(eventFile)) {
     return { stderr: `Error: No event file for session ${sid}`, code: 1 };
   }
   let lines = readRawLines(eventFile);
@@ -1750,7 +2126,7 @@ async function followEvents(ctx, worker, opts, sink, signal) {
   const eventFile = eventsPath(ctx.workerDir, sid);
   const matches = (line) => opts.type === void 0 || parseEvent(line)?.event === opts.type;
   let emitted = 0;
-  if ((0, import_node_fs13.existsSync)(eventFile)) {
+  if ((0, import_node_fs14.existsSync)(eventFile)) {
     const lines = readRawLines(eventFile);
     let backlog = lines.filter(matches);
     if (opts.last !== void 0) {
@@ -1761,7 +2137,7 @@ async function followEvents(ctx, worker, opts, sink, signal) {
   }
   for (; ; ) {
     if (signal?.aborted) return;
-    if ((0, import_node_fs13.existsSync)(eventFile)) {
+    if ((0, import_node_fs14.existsSync)(eventFile)) {
       const lines = readRawLines(eventFile);
       for (const line of lines.slice(emitted)) {
         if (matches(line)) sink(line);
@@ -1773,7 +2149,7 @@ async function followEvents(ctx, worker, opts, sink, signal) {
 }
 
 // src/commands/read-turn.ts
-var import_node_fs14 = require("fs");
+var import_node_fs15 = require("fs");
 async function cmdReadTurn(ctx, worker, opts) {
   const resolved = resolveWorker(ctx, worker);
   if ("code" in resolved) return resolved;
@@ -1785,10 +2161,10 @@ async function cmdReadTurn(ctx, worker, opts) {
     };
   }
   const logFile = ctx.driver.transcriptPath(sid, meta.cwd, ctx.home);
-  if (!(0, import_node_fs14.existsSync)(logFile)) {
+  if (!(0, import_node_fs15.existsSync)(logFile)) {
     return { stderr: `Error: Session log not found at ${logFile}`, code: 1 };
   }
-  const turn = ctx.driver.parseTurn((0, import_node_fs14.readFileSync)(logFile, "utf8"));
+  const turn = ctx.driver.parseTurn((0, import_node_fs15.readFileSync)(logFile, "utf8"));
   if (turn.length === 0) {
     return { stderr: "No user prompt found in session log", code: 1 };
   }
@@ -1991,10 +2367,12 @@ Per-worker subcommands (require --worker, supplied by the shim):
                        --with-turn returns the full markdown turn instead
   send <prompt>        Send a prompt without waiting for the turn
   wait-for-turn [timeout=60] [--after-line N]
-                       Block until the next stop OR session_end. By default the
-                       baseline is the events file's current end, so it waits for
-                       a NEW turn-end; pass --after-line N to wait for the first
-                       turn-end after line N (a baseline you captured earlier)
+                       Block until the next stop, stop_failure, OR session_end.
+                       By default the baseline is the events file's current end,
+                       so it waits for a NEW turn-end; pass --after-line N to wait
+                       for the first turn-end after line N (a baseline captured
+                       earlier). Exit 124 prints retry_after_line: N; reuse that
+                       N with --after-line so a late terminal event stays visible
   status               idle | working | terminated | gone | unknown
   read-events [--last N] [--type T] [--follow]
                        Read the event JSONL stream. With --follow, --last N caps
@@ -2006,6 +2384,14 @@ Per-worker subcommands (require --worker, supplied by the shim):
   handoff              Print tmux-attach instructions for a human
   session-id           Print the worker's session id
   events-file          Print the absolute path to the events JSONL
+
+Exit codes:
+  0   Success
+  1   Operational error
+  2   CLI usage error
+  3   Proven API-error turn
+  4   Reserved for interruption
+  124 Wait budget expired without terminal evidence
 
 Environment variables:
   CSD_CLAUDE_BIN / CSD_CODEX_BIN / CSD_PI_BIN
@@ -2031,8 +2417,8 @@ Environment variables:
   HOME                 Used to locate ~/.claude/projects/<encoded-cwd>/<sid>.jsonl and
                        the one-time consent file (~/.claude/.claude-session-driver-consent).
 `;
-function err(message, code = 2) {
-  return { message, code };
+function err(message2, code = 2) {
+  return { message: message2, code };
 }
 function parseWorker(argv) {
   let worker;
@@ -2239,7 +2625,7 @@ async function run2(argv, io = realIo) {
       const prompt = args[i];
       if (prompt === void 0 || prompt.trim() === "") {
         io.err("Usage: converse [--with-turn] <prompt> [timeout=120]\n");
-        return 1;
+        return 2;
       }
       let timeout = 120;
       if (args[i + 1] !== void 0) {
@@ -2255,7 +2641,7 @@ async function run2(argv, io = realIo) {
       const prompt = args[0];
       if (prompt === void 0 || prompt.trim() === "") {
         io.err("Usage: send <prompt-text>\n");
-        return 1;
+        return 2;
       }
       return emit(io, await cmdSend(ctx, w, prompt));
     }

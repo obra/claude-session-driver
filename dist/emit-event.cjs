@@ -20,6 +20,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/hooks/emit-event.ts
 var emit_event_exports = {};
 __export(emit_event_exports, {
+  MAX_EVENT_TEXT_LENGTH: () => MAX_EVENT_TEXT_LENGTH,
   runHook: () => runHook
 });
 module.exports = __toCommonJS(emit_event_exports);
@@ -69,6 +70,7 @@ function writeMeta(dir, meta) {
 var EVENT_MAP = {
   SessionStart: "session_start",
   Stop: "stop",
+  StopFailure: "stop_failure",
   UserPromptSubmit: "user_prompt_submit",
   SessionEnd: "session_end",
   PreToolUse: "pre_tool_use",
@@ -79,6 +81,59 @@ function asRecord(v) {
 }
 function asString(v) {
   return typeof v === "string" ? v : "";
+}
+var MAX_EVENT_TEXT_LENGTH = 8192;
+function boundedString(v) {
+  return typeof v === "string" ? v.slice(0, MAX_EVENT_TEXT_LENGTH) : void 0;
+}
+function optionalString(v) {
+  return typeof v === "string" && v.length > 0 ? v : void 0;
+}
+function terminalEvidence(payload) {
+  const promptId = optionalString(payload.prompt_id);
+  const transcriptPath = optionalString(payload.transcript_path);
+  const lastAssistantMessage = boundedString(payload.last_assistant_message);
+  return {
+    ...promptId === void 0 ? {} : { prompt_id: promptId },
+    ...transcriptPath === void 0 ? {} : { transcript_path: transcriptPath },
+    ...lastAssistantMessage === void 0 ? {} : { last_assistant_message: lastAssistantMessage }
+  };
+}
+function backgroundTasks(v) {
+  if (!Array.isArray(v)) return void 0;
+  return v.flatMap((item) => {
+    const record = asRecord(item);
+    if (record === null) return [];
+    const id = optionalString(record.id);
+    const type = optionalString(record.type);
+    const status = optionalString(record.status);
+    return [
+      {
+        ...id === void 0 ? {} : { id },
+        ...type === void 0 ? {} : { type },
+        ...status === void 0 ? {} : { status }
+      }
+    ];
+  });
+}
+function sessionCrons(v) {
+  if (!Array.isArray(v)) return void 0;
+  return v.flatMap((item) => {
+    const record = asRecord(item);
+    if (record === null) return [];
+    const id = optionalString(record.id);
+    const schedule = optionalString(record.schedule);
+    const recurring = typeof record.recurring === "boolean" ? record.recurring : void 0;
+    const prompt = boundedString(record.prompt);
+    return [
+      {
+        ...id === void 0 ? {} : { id },
+        ...schedule === void 0 ? {} : { schedule },
+        ...recurring === void 0 ? {} : { recurring },
+        ...prompt === void 0 ? {} : { prompt }
+      }
+    ];
+  });
 }
 function runHook(opts) {
   const empty = { stdout: "" };
@@ -109,8 +164,7 @@ function runHook(opts) {
   const ts = opts.now();
   const worker = buildEvent(event, ts, payload);
   appendEvent(eventsPath(opts.workerDir, sessionId), worker);
-  const stdout = hookEventName === "Stop" ? '{"decision":"approve"}' : "";
-  return { stdout, appended: worker };
+  return { stdout: "", appended: worker };
 }
 function buildEvent(event, ts, payload) {
   switch (event) {
@@ -129,6 +183,29 @@ function buildEvent(event, ts, payload) {
     }
     case "post_tool_use":
       return { event, ts, tool: asString(payload.tool_name) };
+    case "stop": {
+      const stopHookActive = typeof payload.stop_hook_active === "boolean" ? payload.stop_hook_active : void 0;
+      const tasks = backgroundTasks(payload.background_tasks);
+      const crons = sessionCrons(payload.session_crons);
+      return {
+        event,
+        ts,
+        ...terminalEvidence(payload),
+        ...stopHookActive === void 0 ? {} : { stop_hook_active: stopHookActive },
+        ...tasks === void 0 ? {} : { background_tasks: tasks },
+        ...crons === void 0 ? {} : { session_crons: crons }
+      };
+    }
+    case "stop_failure": {
+      const errorDetails = boundedString(payload.error_details);
+      return {
+        event,
+        ts,
+        ...terminalEvidence(payload),
+        error: asString(payload.error),
+        ...errorDetails === void 0 ? {} : { error_details: errorDetails }
+      };
+    }
     default:
       return { event, ts };
   }
@@ -182,5 +259,6 @@ if (typeof require !== "undefined" && typeof module !== "undefined" && require.m
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  MAX_EVENT_TEXT_LENGTH,
   runHook
 });

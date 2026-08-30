@@ -55,6 +55,7 @@ describe('classifyStatus', () => {
   });
   it('idle for stop/session_start', () => {
     expect(classifyStatus(ev('stop'))).toBe('idle');
+    expect(classifyStatus(ev('stop_failure'))).toBe('idle');
     expect(classifyStatus(ev('session_start'))).toBe('idle');
   });
   it('terminated for session_end', () => {

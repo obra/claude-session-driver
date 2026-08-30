@@ -1,5 +1,47 @@
 # Changelog
 
+## [4.1.0] - 2026-08-30
+
+### Added
+- Claude Code `StopFailure` hook support. CSD records a `stop_failure` event
+  with the prompt and transcript identifiers, opaque provider error type,
+  bounded error details, and bounded rendered error message.
+- Claude `converse` performs one bounded transcript-tail check when the event
+  wait expires. Capture retains a UUID, byte offsets, file identity, and a
+  digest from a fixed 1 MiB window. Timeout revalidates that snapshot and reads
+  at most 1 MiB after the anchor. Exit 3 requires a non-sidechain API-error
+  assistant whose `parentUuid` ancestry reaches the anchor; replacement,
+  rewrite, truncation, oversize/malformed tails, orphan/sidechain errors,
+  unknown UUID-bearing chain types, later substantive assistant output, and
+  unmarked tails remain indeterminate.
+- Stop events preserve prompt/transcript identity, stop-hook state, background
+  task identity/type/status, and session cron evidence for diagnostics.
+
+### Changed
+- `wait-for-turn` and `converse` return exit 3 for a proven API-error turn and
+  exit 124 when their wait budget expires without terminal evidence. Both
+  identify the worker and session on stderr. `wait-for-turn` includes the event
+  path, while `converse` includes both event and transcript paths. Neither stops
+  the worker, so it remains available for inspection or another prompt.
+- Observation-only hooks now emit empty stdout. The undocumented Stop
+  `{"decision":"approve"}` response was removed; omitting a Stop decision
+  allows the turn to end under Claude Code's documented hook contract.
+- Missing `send` and `converse` prompt arguments now return the documented CLI
+  usage-error code 2.
+- Exit 124 from `wait-for-turn` prints `retry_after_line: N` and a matching
+  `wait-for-turn --after-line N` retry hint, so a terminal event arriving after
+  the first timeout can still be consumed from the original baseline.
+- `converse` preserves the same cursor in its exit-124 stderr and prints the
+  complete worker-shim retry command instead of dropping the lower-level wait
+  result during error rendering.
+
+### Scope
+- This release keeps the existing daemonless runtime, worker status vocabulary,
+  and tabular `list` output. It does not add turn IDs, claims, journals,
+  controller correlation, automatic retry, interruption classification, or a
+  daemon. The bounded transcript check proves API failure only; it never infers
+  normal completion.
+
 ## [4.0.0] - 2026-06-14
 
 ### Changed

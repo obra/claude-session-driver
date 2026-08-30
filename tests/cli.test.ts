@@ -72,14 +72,14 @@ describe('run — validation and dispatch', () => {
   it('rejects an empty send prompt up front, not after the submit timeout (RE-3)', async () => {
     const { io, err } = makeIo();
     const code = await run(['--worker', 'w', 'send', ''], io);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(err()).toContain('Usage: send');
   });
 
   it('rejects an empty converse prompt up front (RE-3)', async () => {
     const { io, err } = makeIo();
     const code = await run(['--worker', 'w', 'converse', ''], io);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(err()).toContain('Usage: converse');
   });
 
@@ -196,19 +196,19 @@ describe('run — validation and dispatch', () => {
     );
   });
 
-  it('requires a prompt for converse (return 1)', async () => {
+  it('requires a prompt for converse (return 2)', async () => {
     const { io, err } = makeIo();
     const code = await run(['--worker', 'w', 'converse'], io);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(err()).toContain(
       'Usage: converse [--with-turn] <prompt> [timeout=120]',
     );
   });
 
-  it('requires a prompt for send (return 1)', async () => {
+  it('requires a prompt for send (return 2)', async () => {
     const { io, err } = makeIo();
     const code = await run(['--worker', 'w', 'send'], io);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(err()).toContain('Usage: send <prompt-text>');
   });
 
@@ -257,6 +257,28 @@ describe('run — validation and dispatch', () => {
     );
   });
 
+  it('prints a reusable --after-line cursor on wait-for-turn exit 124', async () => {
+    const sid = 'sid-wait-cursor';
+    writeMeta(workerDir, {
+      tmux_name: 'wait-cursor-worker',
+      session_id: sid,
+      cwd: '/home/user/project',
+      harness: 'claude',
+    });
+    const ef = eventsPath(workerDir, sid);
+    appendEvent(ef, { event: 'session_start', ts: 'T1' });
+    appendEvent(ef, { event: 'user_prompt_submit', ts: 'T2' });
+
+    const { io, err } = makeIo();
+    const code = await run(
+      ['--worker', sid, 'wait-for-turn', '0', '--after-line', '2'],
+      io,
+    );
+    expect(code).toBe(124);
+    expect(err()).toContain('retry_after_line: 2');
+    expect(err()).toContain('wait-for-turn --after-line 2');
+  });
+
   it('rejects converse with a non-numeric timeout positional', async () => {
     const { io, err } = makeIo();
     const code = await run(
@@ -283,8 +305,23 @@ describe('run — validation and dispatch', () => {
   it('uses send <prompt-text> in the missing-prompt message (bash parity)', async () => {
     const { io, err } = makeIo();
     const code = await run(['--worker', 'w', 'send'], io);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(err()).toContain('Usage: send <prompt-text>');
+  });
+
+  it('documents the complete public exit-code table', async () => {
+    const { io, out } = makeIo();
+    await run(['help'], io);
+    for (const entry of [
+      '0   Success',
+      '1   Operational error',
+      '2   CLI usage error',
+      '3   Proven API-error turn',
+      '4   Reserved for interruption',
+      '124 Wait budget expired',
+    ]) {
+      expect(out()).toContain(entry);
+    }
   });
 });
 

@@ -88,7 +88,7 @@ $SKILL/csd launch --harness codex my-task /path/to/project
 /tmp/csd-workers/bin/my-task converse "Refactor the auth module" 300
 ```
 
-`converse` sends the prompt, waits for the worker to finish, and prints the final assistant text on stdout. For tool-heavy turns where the bare text strips the interesting part, use `--with-turn` to get the full markdown:
+`converse` sends the prompt, waits for the worker to finish, and prints the final assistant text on stdout. A successful reply exits 0. A proven Claude API failure exits 3 with structured evidence on stderr; an expired wait without terminal evidence exits 124. Both failure outcomes leave the worker alive for inspection or another prompt. For tool-heavy turns where the bare text strips the interesting part, use `--with-turn` to get the full markdown:
 
 ```bash
 /tmp/csd-workers/bin/my-task converse --with-turn "Run the failing tests" 600
@@ -107,7 +107,7 @@ If you need to drive the worker more directly:
 
 ```bash
 /tmp/csd-workers/bin/my-task send "Refactor the auth module"     # send without waiting
-/tmp/csd-workers/bin/my-task wait-for-turn 300                   # block until stop or session_end
+/tmp/csd-workers/bin/my-task wait-for-turn 300                   # block until stop, stop_failure, or session_end
 /tmp/csd-workers/bin/my-task status                              # idle | working | terminated | gone | unknown
 /tmp/csd-workers/bin/my-task read-turn                           # last turn as markdown (tool results truncated to 5 lines)
 /tmp/csd-workers/bin/my-task read-turn --full                    # last turn with complete tool results
@@ -132,7 +132,7 @@ Or pull events after the fact:
 /tmp/csd-workers/bin/my-task read-events --type pre_tool_use
 ```
 
-`--type` accepts one of: `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `session_end`. Unknown event names fail fast. (Claude workers emit `pre_tool_use` but not `post_tool_use`; Codex and Pi emit both.)
+`--type` accepts one of: `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `stop_failure`, `session_end`. Unknown event names fail fast. (Claude workers emit `pre_tool_use` but not `post_tool_use`; Codex and Pi emit both.)
 
 If you see something you don't want, stop the worker:
 
@@ -192,6 +192,15 @@ csd grant-consent
 
 `<shim>` is `/tmp/csd-workers/bin/<tmux-name>`. Run `csd help` for the same surface.
 
+Exit codes used for supervision:
+
+- `0`: command succeeded; a waiting command observed normal completion.
+- `1`: operational error.
+- `2`: CLI usage error.
+- `3`: the current turn ended with proven API-error evidence.
+- `4`: reserved for a future interruption contract.
+- `124`: the wait budget expired while the turn remained open or indeterminate.
+
 ## Common Patterns
 
 ### Fan-Out: Multiple Workers in Parallel
@@ -228,11 +237,41 @@ Don't trust worker B's summary of what it did — check the produced file. A wor
 
 ### Worker crashes mid-turn
 
-`wait-for-turn` matches `stop` OR `session_end`, so it returns when the worker dies. Call `status` afterward: if it's `gone`, the worker crashed.
+`wait-for-turn` matches `stop`, `stop_failure`, OR `session_end`, so it returns when the worker dies or Claude reports a terminal API failure. Call `status` afterward: if it's `gone`, the worker crashed.
+
+### Claude API failures
+
+When Claude Code emits `StopFailure`, `wait-for-turn` and `converse` return exit
+3 and write the worker name, session ID, error type/details, rendered error,
+and diagnostic paths to stderr. Do not treat stderr as an assistant response and
+do not retry automatically; inspect the provider error first. The worker maps
+back to the existing `idle` status and remains reusable.
+
+If a Claude `converse` wait expires without the hook, CSD performs one bounded
+transcript-tail check. It revalidates the pre-send UUID and byte-offset snapshot,
+then reads at most 1 MiB after the anchor. It returns 3 only when a non-sidechain
+assistant is structurally marked `isApiErrorMessage: true` and its `parentUuid`
+ancestry reaches the anchor. Missing/mismatched anchors, transcript replacement
+or rewrite, oversized/malformed tails, orphan/sidechain errors, unknown
+UUID-bearing chain types, later substantive assistant content, or no marked
+terminal record remains exit 124. This fallback proves API failure only; it
+never proves normal completion.
+
+### After a `wait-for-turn` timeout, reuse its cursor
+
+Exit 124 prints `retry_after_line: N` and a retry hint. If the worker is still
+active, rerun the same shim with that baseline:
+
+```bash
+/tmp/csd-workers/bin/my-task wait-for-turn --after-line N
+```
+
+Do not use a bare retry: it baselines at the event file's current end and can
+skip a terminal event that arrived after the first timeout.
 
 ### After a `converse` timeout, check `status` before `wait-for-turn`
 
-A bare `wait-for-turn` baselines at the *current* end of the events file and waits for the **next** turn-end. If a `converse` timed out, the worker often finishes during the gap — the `stop` has already landed, so a follow-up `wait-for-turn` blocks the entire timeout waiting for a turn that will never start. After a timeout, call `status` first: `idle` means the turn already ended (`read-turn` to read it); `working` means it's still going.
+A bare `wait-for-turn` baselines at the *current* end of the events file and waits for the **next** turn-end. If `converse` exits 124, the worker remains alive and may finish during the gap — the terminal event can land before a follow-up wait begins. `converse` prints `retry_after_line: N` and the complete worker-shim retry command. Inspect the event/transcript paths and call `status` first: `idle` means the turn already ended (`read-turn` to inspect it); `working` means it is still open or the terminal hook was unavailable. Then use the printed retry command when the turn is still working or when you need to consume a terminal event that landed after timeout. Do not use a bare wait, and do not stop the worker merely because the caller's wait expired.
 
 ### Recovering workers after a reboot
 
@@ -265,6 +304,7 @@ echo "Long instructions..." > /tmp/instructions.txt
 ## Important Notes
 
 - **One controller per worker.** Two controllers driving the same tmux session will collide.
+- **Milestone A correlation boundary.** Terminal outcomes cover one controller waiting on its own turn with no concurrent handoff prompt. CSD does not yet assign turn IDs, claim turns, correlate queued prompts, classify interruption, or reconcile multiple controllers.
 - **Workers don't share state with the controller** except via files on disk and the event stream.
 - **Shim paths bake in absolute skill paths.** A plugin reinstall at a new location breaks live workers; relaunch them.
 - **csd is a transparent relay, not a validator.** `converse`/`read-turn` return whatever the worker says — verbatim, including when the worker is confidently wrong. For correctness-critical handoffs, verify the produced **artifact on disk**, not the worker's prose self-report.

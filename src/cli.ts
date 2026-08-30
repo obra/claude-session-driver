@@ -103,10 +103,12 @@ Per-worker subcommands (require --worker, supplied by the shim):
                        --with-turn returns the full markdown turn instead
   send <prompt>        Send a prompt without waiting for the turn
   wait-for-turn [timeout=60] [--after-line N]
-                       Block until the next stop OR session_end. By default the
-                       baseline is the events file's current end, so it waits for
-                       a NEW turn-end; pass --after-line N to wait for the first
-                       turn-end after line N (a baseline you captured earlier)
+                       Block until the next stop, stop_failure, OR session_end.
+                       By default the baseline is the events file's current end,
+                       so it waits for a NEW turn-end; pass --after-line N to wait
+                       for the first turn-end after line N (a baseline captured
+                       earlier). Exit 124 prints retry_after_line: N; reuse that
+                       N with --after-line so a late terminal event stays visible
   status               idle | working | terminated | gone | unknown
   read-events [--last N] [--type T] [--follow]
                        Read the event JSONL stream. With --follow, --last N caps
@@ -118,6 +120,14 @@ Per-worker subcommands (require --worker, supplied by the shim):
   handoff              Print tmux-attach instructions for a human
   session-id           Print the worker's session id
   events-file          Print the absolute path to the events JSONL
+
+Exit codes:
+  0   Success
+  1   Operational error
+  2   CLI usage error
+  3   Proven API-error turn
+  4   Reserved for interruption
+  124 Wait budget expired without terminal evidence
 
 Environment variables:
   CSD_CLAUDE_BIN / CSD_CODEX_BIN / CSD_PI_BIN
@@ -432,7 +442,7 @@ export async function run(argv: string[], io: Io = realIo): Promise<number> {
       const prompt = args[i];
       if (prompt === undefined || prompt.trim() === '') {
         io.err('Usage: converse [--with-turn] <prompt> [timeout=120]\n');
-        return 1;
+        return 2;
       }
       let timeout = 120;
       if (args[i + 1] !== undefined) {
@@ -449,7 +459,7 @@ export async function run(argv: string[], io: Io = realIo): Promise<number> {
       const prompt = args[0];
       if (prompt === undefined || prompt.trim() === '') {
         io.err('Usage: send <prompt-text>\n');
-        return 1;
+        return 2;
       }
       return emit(io, await cmdSend(ctx, w, prompt));
     }

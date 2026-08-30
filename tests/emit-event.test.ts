@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readEvents } from '../src/core/event-log.js';
 import { eventsPath, metaPath } from '../src/core/paths.js';
 import { readMeta } from '../src/core/worker-store.js';
-import { runHook } from '../src/hooks/emit-event.js';
+import { MAX_EVENT_TEXT_LENGTH, runHook } from '../src/hooks/emit-event.js';
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'csd-hook-'));
@@ -186,16 +186,131 @@ describe('runHook — tool use', () => {
 });
 
 describe('runHook — Stop', () => {
-  it('approves on stdout and appends a stop event', () => {
+  it('uses empty stdout and preserves rich stop evidence', () => {
     const dir = tmpDir();
     makeWorker(dir);
-    const stdin = JSON.stringify({ session_id: SID, hook_event_name: 'Stop' });
+    const stdin = JSON.stringify({
+      session_id: SID,
+      prompt_id: 'prompt-1',
+      transcript_path: '/tmp/transcript.jsonl',
+      hook_event_name: 'Stop',
+      stop_hook_active: true,
+      last_assistant_message: 'done',
+      background_tasks: [
+        {
+          id: 'task-1',
+          type: 'shell',
+          status: 'running',
+          description: 'must not enter the event',
+          command: 'must not enter the event',
+        },
+      ],
+      session_crons: [
+        {
+          id: 'cron-1',
+          schedule: '0 9 * * 1-5',
+          recurring: true,
+          prompt: 'check build',
+        },
+      ],
+    });
     const result = run(stdin, dir);
-    expect(result.stdout).toBe('{"decision":"approve"}');
-    expect(result.appended).toEqual({ event: 'stop', ts: 'T' });
-    expect(readEvents(eventsPath(dir, SID))).toEqual([
-      { event: 'stop', ts: 'T' },
+    expect(result.stdout).toBe('');
+    expect(result.appended).toEqual({
+      event: 'stop',
+      ts: 'T',
+      prompt_id: 'prompt-1',
+      transcript_path: '/tmp/transcript.jsonl',
+      stop_hook_active: true,
+      last_assistant_message: 'done',
+      background_tasks: [{ id: 'task-1', type: 'shell', status: 'running' }],
+      session_crons: [
+        {
+          id: 'cron-1',
+          schedule: '0 9 * * 1-5',
+          recurring: true,
+          prompt: 'check build',
+        },
+      ],
+    });
+    expect(readEvents(eventsPath(dir, SID))).toEqual([result.appended]);
+  });
+
+  it('bounds free-text stop evidence', () => {
+    const dir = tmpDir();
+    makeWorker(dir);
+    const result = run(
+      JSON.stringify({
+        session_id: SID,
+        hook_event_name: 'Stop',
+        last_assistant_message: 'x'.repeat(MAX_EVENT_TEXT_LENGTH + 10),
+        session_crons: [
+          {
+            id: 'cron-1',
+            schedule: '* * * * *',
+            recurring: true,
+            prompt: 'y'.repeat(MAX_EVENT_TEXT_LENGTH + 10),
+          },
+        ],
+      }),
+      dir,
+    );
+    expect(result.appended).toMatchObject({
+      last_assistant_message: 'x'.repeat(MAX_EVENT_TEXT_LENGTH),
+      session_crons: [{ prompt: 'y'.repeat(MAX_EVENT_TEXT_LENGTH) }],
+    });
+  });
+});
+
+describe('runHook — StopFailure', () => {
+  it('uses empty stdout and preserves structured provider failure evidence', () => {
+    const dir = tmpDir();
+    makeWorker(dir);
+    const result = run(
+      JSON.stringify({
+        session_id: SID,
+        prompt_id: 'prompt-1',
+        transcript_path: '/tmp/transcript.jsonl',
+        hook_event_name: 'StopFailure',
+        error: 'future_provider_error',
+        error_details: 'd'.repeat(MAX_EVENT_TEXT_LENGTH + 20),
+        last_assistant_message: 'm'.repeat(MAX_EVENT_TEXT_LENGTH + 20),
+      }),
+      dir,
+    );
+    expect(result.stdout).toBe('');
+    expect(result.appended).toEqual({
+      event: 'stop_failure',
+      ts: 'T',
+      prompt_id: 'prompt-1',
+      transcript_path: '/tmp/transcript.jsonl',
+      error: 'future_provider_error',
+      error_details: 'd'.repeat(MAX_EVENT_TEXT_LENGTH),
+      last_assistant_message: 'm'.repeat(MAX_EVENT_TEXT_LENGTH),
+    });
+  });
+});
+
+describe('plugin hook registration', () => {
+  it('registers StopFailure match-all and keeps every hook observation-only', () => {
+    const hooksFile = join(import.meta.dirname, '..', 'hooks', 'hooks.json');
+    const config = JSON.parse(readFileSync(hooksFile, 'utf8')) as {
+      hooks: Record<string, Array<{ matcher?: string }>>;
+    };
+    expect(config.hooks.StopFailure).toEqual([
+      expect.objectContaining({ matcher: '*' }),
     ]);
+
+    for (const event of Object.keys(config.hooks)) {
+      const payload = {
+        session_id: SID,
+        hook_event_name: event,
+        error: 'unknown',
+      };
+      const dir = tmpDir();
+      makeWorker(dir);
+      expect(run(JSON.stringify(payload), dir).stdout).toBe('');
+    }
   });
 });
 
