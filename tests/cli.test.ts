@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   followStream,
   grantConsentConfirm,
+  grantWorkspaceTrustConfirm,
+  readExactLine,
   readLine,
   run,
 } from '../src/cli.js';
@@ -118,6 +120,7 @@ describe('run — validation and dispatch', () => {
       'adopt',
       'list',
       'grant-consent',
+      'grant-workspace-trust',
       'converse',
       'send',
       'wait-for-turn',
@@ -164,6 +167,18 @@ describe('run — validation and dispatch', () => {
     expect(err()).toContain(
       'Usage: adopt <tmux-name> <cwd> <session-id> [-- claude-args...]',
     );
+  });
+
+  it('requires exactly one cwd for grant-workspace-trust', async () => {
+    for (const argv of [
+      ['grant-workspace-trust'],
+      ['grant-workspace-trust', '/one', '/two'],
+    ]) {
+      const { io, err } = makeIo();
+      const code = await run(argv, io);
+      expect(code).toBe(2);
+      expect(err()).toContain('Usage: grant-workspace-trust <cwd>');
+    }
   });
 
   it('rejects unknown options for list', async () => {
@@ -393,6 +408,24 @@ describe('readLine — piped (non-TTY) stdin', () => {
   it('returns a non-yes piped line verbatim', async () => {
     const reply = await readLine(Readable.from('no\n'));
     expect(reply).toBe('no');
+  });
+});
+
+describe('readExactLine — workspace path confirmation', () => {
+  it('preserves the complete line without trimming path characters', async () => {
+    expect(await readExactLine(Readable.from('  /path with spaces  \n'))).toBe(
+      '  /path with spaces  ',
+    );
+  });
+
+  it('prints the exact-path prompt before reading', async () => {
+    const { io, out } = makeIo();
+    const answer = await grantWorkspaceTrustConfirm(
+      io,
+      Readable.from('/canonical/path\n'),
+    );
+    expect(answer).toBe('/canonical/path');
+    expect(out()).toContain('Type the exact canonical path');
   });
 });
 

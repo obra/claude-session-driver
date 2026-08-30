@@ -1,24 +1,38 @@
 import { readRawLines } from '../core/event-log.js';
 import { eventsPath } from '../core/paths.js';
+import { shellQuote } from '../core/shell.js';
 import { removeWorker } from '../core/worker-store.js';
+import { hasWorkspaceTrustGrant } from '../core/workspace-trust.js';
 import { parseEvent } from '../events.js';
 import type { CommandContext } from './context.js';
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
-/** Bash literal: the trust-dialog window and the proof-of-life window. */
-const DEFAULT_TRUST_TIMEOUT_MS = 5_000;
 const DEFAULT_START_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
 
 export interface AwaitStartOpts {
-  /** Trust-dialog window in ms (bash: 5s). */
-  trustTimeoutMs?: number;
+  /** Canonical workspace path the worker was launched in. */
+  cwd: string;
+  /** CSD command path used to render the exact grant command. */
+  csdPath: string;
+  /** Ignore event-log lines that existed before this launch/adopt attempt. */
+  afterLine: number;
   /** session_start window in ms (bash: 30s). */
   startTimeoutMs?: number;
   /** Poll interval in ms (bash: 250ms in phase 1, 500ms in phase 2). */
   pollMs?: number;
+}
+
+const WORKSPACE_TRUST_PROMPT =
+  /trust this folder|trust the files in this folder/i;
+
+function grantCommand(csdPath: string, cwd: string): string {
+  const command = /\.[cm]?js$/.test(csdPath)
+    ? `node ${shellQuote(csdPath)}`
+    : shellQuote(csdPath);
+  return `${command} grant-workspace-trust ${shellQuote(cwd)}`;
 }
 
 /**
@@ -29,10 +43,10 @@ export type AwaitStartResult =
   | { started: true }
   | { started: false; failureMessage: string };
 
-function sawSessionStart(eventFile: string): boolean {
-  return readRawLines(eventFile).some(
-    (line) => parseEvent(line)?.event === 'session_start',
-  );
+function sawSessionStart(eventFile: string, afterLine: number): boolean {
+  return readRawLines(eventFile)
+    .slice(afterLine)
+    .some((line) => parseEvent(line)?.event === 'session_start');
 }
 
 /** Last `n` non-empty lines, trailing whitespace stripped (bash sed + tail -20). */
@@ -46,8 +60,9 @@ function paneTail(pane: string, n: number): string {
 }
 
 /**
- * Accept any trust dialog, then block until the worker emits `session_start`.
- * Parity port of bash `_await_session_start` (csd:557-605).
+ * Block until the worker emits `session_start`, watching for trust prompts for
+ * the full proof-of-life window. A prompt is accepted only for a CSD-granted
+ * canonical workspace; otherwise the worker is torn down immediately.
  *
  * Lives in the command layer (not the driver) because it needs `ctx.tmux`
  * (capture/sendEnter) and `ctx.workerDir` (the events file) — context the
@@ -62,31 +77,41 @@ export async function awaitSessionStart(
   ctx: CommandContext,
   tmuxName: string,
   sessionId: string,
-  opts: AwaitStartOpts = {},
+  opts: AwaitStartOpts,
 ): Promise<AwaitStartResult> {
-  const trustTimeoutMs = opts.trustTimeoutMs ?? DEFAULT_TRUST_TIMEOUT_MS;
   const startTimeoutMs = opts.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
   const eventFile = eventsPath(ctx.workerDir, sessionId);
 
-  // Phase 1: trust-dialog accept (content-aware). Break early if the worker
-  // already started (some launches never show the dialog).
-  const trustDeadline = Date.now() + trustTimeoutMs;
-  while (Date.now() < trustDeadline) {
-    if (sawSessionStart(eventFile)) break;
-    const pane = await ctx.tmux.capturePane(tmuxName);
-    if (pane.includes('trust this folder')) {
-      await ctx.tmux.sendEnter(tmuxName);
-      break;
-    }
-    await sleep(pollMs);
-  }
-
-  // Phase 2: block until session_start.
   const startDeadline = Date.now() + startTimeoutMs;
+  let workspaceTrustHandled = false;
   while (Date.now() < startDeadline) {
-    if (sawSessionStart(eventFile)) {
+    if (sawSessionStart(eventFile, opts.afterLine)) {
       return { started: true };
+    }
+
+    let pane = '';
+    try {
+      pane = await ctx.tmux.capturePane(tmuxName);
+    } catch {
+      // Pane capture can race startup; keep waiting for the event proof.
+    }
+    if (!workspaceTrustHandled && WORKSPACE_TRUST_PROMPT.test(pane)) {
+      if (!hasWorkspaceTrustGrant(ctx.home, opts.cwd)) {
+        await ctx.tmux.killSession(tmuxName);
+        removeWorker(ctx.workerDir, sessionId, tmuxName);
+        return {
+          started: false,
+          failureMessage: [
+            `Error: Claude requires workspace trust for ${opts.cwd}.`,
+            'CSD did not accept the prompt because this canonical workspace has no grant.',
+            `Run interactively: ${grantCommand(opts.csdPath, opts.cwd)}`,
+            'Then launch or adopt the worker again.',
+          ].join('\n'),
+        };
+      }
+      await ctx.tmux.sendEnter(tmuxName);
+      workspaceTrustHandled = true;
     }
     await sleep(pollMs);
   }

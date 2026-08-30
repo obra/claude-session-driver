@@ -45,6 +45,7 @@ The CLI lives at `<skill>/scripts/csd`. Top-level subcommands need the skill pat
 - `csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]` — re-adopt an existing Claude session as a worker (claude-only; see [Recovering workers](#recovering-workers-after-a-reboot))
 - `csd list [--all]` — enumerate workers
 - `csd grant-consent` — one-time consent for running workers with permissions bypassed
+- `csd grant-workspace-trust <cwd>` — interactively allow CSD to accept Claude's workspace trust prompt for one canonical directory
 
 Once a worker is launched, run subsequent commands against `/tmp/csd-workers/bin/<tmux-name>`:
 
@@ -177,6 +178,7 @@ csd adopt <tmux-name> <cwd> <session-id> [-- claude-args...]   # claude-only
 csd list [--all] [<pattern>]
 csd prune                          # remove dead/orphaned worker state
 csd grant-consent
+csd grant-workspace-trust <cwd>       # interactive, Claude workspace trust only
 
 <shim> converse [--with-turn] <prompt> [timeout=120]
 <shim> send <prompt>
@@ -238,6 +240,21 @@ Don't trust worker B's summary of what it did — check the produced file. A wor
 ### Worker crashes mid-turn
 
 `wait-for-turn` matches `stop`, `stop_failure`, OR `session_end`, so it returns when the worker dies or Claude reports a terminal API failure. Call `status` afterward: if it's `gone`, the worker crashed.
+
+### Claude workspace trust blocks launch or adopt
+
+If `launch` or `adopt` reports that the canonical workspace has no grant, run
+the exact `grant-workspace-trust` command it prints in an interactive terminal.
+Review the normalized path and type that complete path exactly; do not pipe
+`yes` or automate the confirmation. Relaunch after the grant succeeds.
+
+CSD stores its own hashed, owner-only per-workspace grant and does not directly
+edit Claude's `~/.claude.json`; Claude controls its own persistence after the
+prompt is accepted. The grant lets CSD press Enter only on Claude's workspace
+trust dialog. It does not authorize separate security decisions such as
+external `CLAUDE.md` imports. Claude intentionally asks again on every launch
+from the home directory; granting the canonical home path lets CSD confirm that
+workspace prompt each time without weakening other prompts.
 
 ### Claude API failures
 

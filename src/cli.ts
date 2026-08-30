@@ -6,6 +6,7 @@ import type { CommandContext, CommandResult } from './commands/context.js';
 import { cmdConverse } from './commands/converse.js';
 import { cmdEventsFile } from './commands/events-file.js';
 import { cmdGrantConsent } from './commands/grant-consent.js';
+import { cmdGrantWorkspaceTrust } from './commands/grant-workspace-trust.js';
 import { cmdHandoff } from './commands/handoff.js';
 import type { BootstrapOpts } from './commands/launch.js';
 import { cmdLaunch } from './commands/launch.js';
@@ -44,6 +45,7 @@ const TOP_LEVEL_SUBS = [
   'list',
   'prune',
   'grant-consent',
+  'grant-workspace-trust',
   'help',
 ];
 const PER_WORKER_SUBS = [
@@ -95,6 +97,9 @@ Top-level subcommands:
                        session dead); live workers are untouched
   grant-consent        One-time consent for running workers with permissions
                        bypassed (--dangerously-skip-permissions et al.)
+  grant-workspace-trust <cwd>
+                       Interactively grant CSD permission to accept Claude's
+                       workspace-trust prompt for one canonical directory
   help                 Show this message
 
 Per-worker subcommands (require --worker, supplied by the shim):
@@ -269,6 +274,21 @@ export function readLine(
   });
 }
 
+/** Read the first line without trimming; workspace paths must match exactly. */
+export function readExactLine(
+  input: NodeJS.ReadableStream = process.stdin,
+): Promise<string> {
+  return new Promise((res) => {
+    const rl = createInterface({ input });
+    let captured: string | null = null;
+    rl.once('line', (line) => {
+      captured = line;
+      rl.close();
+    });
+    rl.once('close', () => res(captured ?? ''));
+  });
+}
+
 /** Parse `launch [--harness <id>] <tmux-name> <cwd> [-- harness-args...]`. */
 function parseLaunchArgs(
   argv: string[],
@@ -401,6 +421,22 @@ export async function run(argv: string[], io: Io = realIo): Promise<number> {
           confirm: () => grantConsentConfirm(io),
         }),
       );
+
+    case 'grant-workspace-trust': {
+      const [cwd, ...extra] = args;
+      if (cwd === undefined || extra.length > 0) {
+        io.err('Usage: grant-workspace-trust <cwd>\n');
+        return 2;
+      }
+      return emit(
+        io,
+        await cmdGrantWorkspaceTrust(ctx, cwd, {
+          isInteractive: process.stdin.isTTY === true,
+          warn: (text) => io.out(`${text}\n`),
+          confirm: () => grantWorkspaceTrustConfirm(io),
+        }),
+      );
+    }
 
     case 'launch': {
       const parsedArgs = parseLaunchArgs(args);
@@ -655,6 +691,14 @@ export async function grantConsentConfirm(
   io.out("Type 'yes' to grant consent:\n");
   const reply = await readLine(input);
   return reply === 'yes';
+}
+
+export async function grantWorkspaceTrustConfirm(
+  io: Io,
+  input: NodeJS.ReadableStream = process.stdin,
+): Promise<string> {
+  io.out('Type the exact canonical path shown above to confirm:\n');
+  return readExactLine(input);
 }
 
 // Run the CLI only when executed as the bundled `node dist/csd.cjs`. In the

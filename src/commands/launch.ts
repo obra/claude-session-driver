@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { hasConsent } from '../core/consent.js';
+import { readRawLines } from '../core/event-log.js';
 import {
   ensureBackCompatSymlink,
   eventsPath,
@@ -31,7 +32,6 @@ export interface BootstrapOpts {
   /** The csd command path used in the reproduce line + consent message. */
   csdPath: string;
   /** awaitSessionStart timing overrides (tests pass tiny values). */
-  trustTimeoutMs?: number;
   startTimeoutMs?: number;
   pollMs?: number;
   /**
@@ -210,11 +210,23 @@ async function launchAssign(
     ...driver.launchArgv('launch', sessionId, cwd, opts.pluginDir, ctx.home),
     ...extraArgs,
   ];
+  // Capture the attempt boundary before tmux starts. The SessionStart hook can
+  // append synchronously during newSession, so taking this baseline afterward
+  // would race an extremely fast worker.
+  const eventLineBaseline = readRawLines(
+    eventsPath(ctx.workerDir, sessionId),
+  ).length;
   await ctx.tmux.newSession(tmuxName, cwd, env, argv);
 
   await driver.postLaunch(tmuxName);
 
-  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, opts);
+  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, {
+    cwd,
+    csdPath: opts.csdPath,
+    afterLine: eventLineBaseline,
+    startTimeoutMs: opts.startTimeoutMs,
+    pollMs: opts.pollMs,
+  });
   if (!proof.started) {
     return { stderr: proof.failureMessage, code: 1 };
   }

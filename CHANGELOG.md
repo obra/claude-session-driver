@@ -3,6 +3,16 @@
 ## [4.1.0] - 2026-08-30
 
 ### Added
+- `csd grant-workspace-trust <cwd>` creates an explicit CSD-owned grant for one
+  realpath-normalized directory. It requires an interactive user to type the
+  complete canonical path, stores an owner-only record behind a hashed filename
+  using an atomic same-directory rename, and never writes `~/.claude.json`.
+- Claude `launch` and `adopt` now watch for the workspace trust dialog throughout
+  the complete start window. A granted workspace is confirmed; an ungranted one
+  fails immediately with worker teardown and an exact grant command instead of
+  waiting for the generic 30-second timeout. Home-directory prompts are handled
+  on every launch when home itself is granted. Separate prompts such as external
+  `CLAUDE.md` imports are never authorized by this grant.
 - Claude Code `StopFailure` hook support. CSD records a `stop_failure` event
   with the prompt and transcript identifiers, opaque provider error type,
   bounded error details, and bounded rendered error message.

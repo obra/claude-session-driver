@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { hasConsent } from '../core/consent.js';
+import { readRawLines } from '../core/event-log.js';
 import { ensureBackCompatSymlink, eventsPath } from '../core/paths.js';
 import { isoSecondsUtc } from '../core/time.js';
 import {
@@ -116,6 +117,13 @@ export async function cmdAdopt(
     ...extraArgs,
   ];
 
+  // A resumed session id can already have an event log from its prior worker.
+  // Capture the attempt boundary before either tmux start path so even a hook
+  // that writes session_start synchronously is visible to awaitSessionStart.
+  const eventLineBaseline = readRawLines(
+    eventsPath(ctx.workerDir, sessionId),
+  ).length;
+
   let mode: string;
   if (await ctx.tmux.hasSession(tmuxName)) {
     mode = 'respawned existing pane';
@@ -127,7 +135,13 @@ export async function cmdAdopt(
 
   await driver.postLaunch(tmuxName);
 
-  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, opts);
+  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, {
+    cwd,
+    csdPath: opts.csdPath,
+    afterLine: eventLineBaseline,
+    startTimeoutMs: opts.startTimeoutMs,
+    pollMs: opts.pollMs,
+  });
   if (!proof.started) {
     return { stderr: proof.failureMessage, code: 1 };
   }

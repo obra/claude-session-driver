@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -20,6 +21,7 @@ import {
   readMeta,
   writeHarnessMarker,
 } from '../src/core/worker-store.js';
+import { grantWorkspaceTrust } from '../src/core/workspace-trust.js';
 import { getDriver } from '../src/harness/registry.js';
 
 function tmpDir(prefix: string): string {
@@ -73,7 +75,7 @@ function freshState(): FakeTmuxState {
   return { hasSession: false, newSession: [], respawnPane: [] };
 }
 
-const FAST = { trustTimeoutMs: 50, startTimeoutMs: 2000, pollMs: 10 };
+const FAST = { startTimeoutMs: 2000, pollMs: 10 };
 const SID = 'abcd1234-5678-90ab-cdef-1234567890ab';
 
 describe('cmdAdopt', () => {
@@ -277,6 +279,108 @@ describe('cmdAdopt', () => {
     expect(meta?.invocation).toEqual(['w1', cwd, SID]);
   });
 
+  it('uses the same workspace grant when adopt encounters the trust prompt', async () => {
+    grantConsent(home);
+    grantWorkspaceTrust(home, cwd);
+    seedTranscript();
+    const state = freshState();
+    const enter: string[] = [];
+    const base = fakeTmux(state);
+    const tmux: Tmux = {
+      ...base,
+      async capturePane() {
+        return 'Do you trust this folder?';
+      },
+      async sendEnter(name) {
+        enter.push(name);
+        appendEvent(eventsPath(workerDir, SID), {
+          event: 'session_start',
+          ts: 'T',
+        });
+      },
+    };
+    const result = await cmdAdopt(
+      makeCtx(workerDir, home, tmux),
+      { tmuxName: 'w1', cwd, sessionId: SID, extraArgs: [] },
+      { ...baseOpts(), ...FAST },
+    );
+    expect(result.code).toBe(0);
+    expect(enter).toEqual(['w1']);
+  });
+
+  it('ignores a stale session_start and rejects an ungranted trust prompt', async () => {
+    grantConsent(home);
+    seedTranscript();
+    appendEvent(eventsPath(workerDir, SID), {
+      event: 'session_start',
+      ts: 'old',
+    });
+    const state = freshState();
+    state.hasSession = true;
+    const enter: string[] = [];
+    const killed: string[] = [];
+    const base = fakeTmux(state);
+    const tmux: Tmux = {
+      ...base,
+      async capturePane() {
+        return 'Do you trust this folder?';
+      },
+      async sendEnter(name) {
+        enter.push(name);
+      },
+      async killSession(name) {
+        killed.push(name);
+      },
+    };
+
+    const result = await cmdAdopt(
+      makeCtx(workerDir, home, tmux),
+      { tmuxName: 'w1', cwd, sessionId: SID, extraArgs: [] },
+      { ...baseOpts(), ...FAST },
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('requires workspace trust');
+    expect(state.respawnPane).toHaveLength(1);
+    expect(enter).toEqual([]);
+    expect(killed).toEqual(['w1']);
+    expect(readMeta(workerDir, SID)).toBeNull();
+    expect(existsSync(eventsPath(workerDir, SID))).toBe(false);
+  });
+
+  it('ignores a stale session_start and succeeds on the new attempt event', async () => {
+    grantConsent(home);
+    seedTranscript();
+    appendEvent(eventsPath(workerDir, SID), {
+      event: 'session_start',
+      ts: 'old',
+    });
+    const state = freshState();
+    state.hasSession = true;
+    let sawStaleLogBeforeRespawn = false;
+    const ctx = makeCtx(
+      workerDir,
+      home,
+      fakeTmux(state, () => {
+        sawStaleLogBeforeRespawn = true;
+        appendEvent(eventsPath(workerDir, SID), {
+          event: 'session_start',
+          ts: 'new',
+        });
+      }),
+    );
+
+    const result = await cmdAdopt(
+      ctx,
+      { tmuxName: 'w1', cwd, sessionId: SID, extraArgs: [] },
+      { ...baseOpts(), ...FAST },
+    );
+
+    expect(result.code).toBe(0);
+    expect(sawStaleLogBeforeRespawn).toBe(true);
+    expect(state.respawnPane).toHaveLength(1);
+  });
+
   it('pre-writes the meta before launch and tears it down on proof-of-life failure', async () => {
     grantConsent(home);
     seedTranscript();
@@ -286,7 +390,7 @@ describe('cmdAdopt', () => {
     const result = await cmdAdopt(
       ctx,
       { tmuxName: 'w1', cwd, sessionId: SID, extraArgs: [] },
-      { ...baseOpts(), trustTimeoutMs: 20, startTimeoutMs: 40, pollMs: 10 },
+      { ...baseOpts(), startTimeoutMs: 40, pollMs: 10 },
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(

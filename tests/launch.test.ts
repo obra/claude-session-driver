@@ -21,6 +21,7 @@ import { eventsPath, shimPath } from '../src/core/paths.js';
 import { shellQuote } from '../src/core/shell.js';
 import type { Tmux } from '../src/core/tmux.js';
 import { readHarnessMarker, readMeta } from '../src/core/worker-store.js';
+import { grantWorkspaceTrust } from '../src/core/workspace-trust.js';
 import { getDriver } from '../src/harness/registry.js';
 import { runHook } from '../src/hooks/emit-event.js';
 
@@ -79,7 +80,7 @@ function freshState(): FakeTmuxState {
   return { hasSession: false, newSession: [], respawnPane: [] };
 }
 
-const FAST = { trustTimeoutMs: 50, startTimeoutMs: 2000, pollMs: 10 };
+const FAST = { startTimeoutMs: 2000, pollMs: 10 };
 
 describe('shellQuote', () => {
   it('leaves simple tokens unquoted', () => {
@@ -288,7 +289,7 @@ describe('cmdLaunch', () => {
     const result = await cmdLaunch(
       ctx,
       { tmuxName: 'w1', cwd, extraArgs: [], harness: 'claude' },
-      { ...baseOpts(), trustTimeoutMs: 20, startTimeoutMs: 40, pollMs: 10 },
+      { ...baseOpts(), startTimeoutMs: 40, pollMs: 10 },
     );
     expect(result.code).toBe(1);
     expect(result.stderr).toContain(
@@ -299,6 +300,70 @@ describe('cmdLaunch', () => {
     const argv = state.newSession[0]!.argv;
     const sid = argv[argv.indexOf('--session-id') + 1] as string;
     expect(readMeta(workerDir, sid)).toBeNull();
+  });
+
+  it('fails fast without Enter when Claude asks to trust an ungranted workspace', async () => {
+    grantConsent(home);
+    const state = freshState();
+    const enter: string[] = [];
+    const killed: string[] = [];
+    const base = fakeTmux(state);
+    const tmux: Tmux = {
+      ...base,
+      async capturePane() {
+        return 'Do you trust the files in this folder?';
+      },
+      async sendEnter(name) {
+        enter.push(name);
+      },
+      async killSession(name) {
+        killed.push(name);
+      },
+    };
+    const result = await cmdLaunch(
+      makeCtx(workerDir, home, tmux),
+      { tmuxName: 'w1', cwd, extraArgs: [], harness: 'claude' },
+      { ...baseOpts(), startTimeoutMs: 10_000, pollMs: 10 },
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `/usr/local/bin/csd grant-workspace-trust ${cwd}`,
+    );
+    expect(enter).toEqual([]);
+    expect(killed).toEqual(['w1']);
+    const argv = state.newSession[0]!.argv;
+    const sid = argv[argv.indexOf('--session-id') + 1] as string;
+    expect(readMeta(workerDir, sid)).toBeNull();
+  });
+
+  it('accepts a granted workspace prompt and continues launch', async () => {
+    grantConsent(home);
+    grantWorkspaceTrust(home, cwd);
+    const state = freshState();
+    const enter: string[] = [];
+    const base = fakeTmux(state);
+    const tmux: Tmux = {
+      ...base,
+      async capturePane() {
+        return 'Do you trust this folder?';
+      },
+      async sendEnter(name) {
+        enter.push(name);
+        const argv = state.newSession[0]!.argv;
+        const sid = argv[argv.indexOf('--session-id') + 1] as string;
+        appendEvent(eventsPath(workerDir, sid), {
+          event: 'session_start',
+          ts: 'T',
+        });
+      },
+    };
+    const result = await cmdLaunch(
+      makeCtx(workerDir, home, tmux),
+      { tmuxName: 'w1', cwd, extraArgs: [], harness: 'claude' },
+      { ...baseOpts(), ...FAST },
+    );
+    expect(result.code).toBe(0);
+    expect(enter).toEqual(['w1']);
   });
 
   it('omits the -- separator in invocation when there are no extra args', async () => {

@@ -55,6 +55,7 @@ All operations go through a single binary at `skills/driving-claude-code-session
 | `csd adopt <name> <cwd> <session-id> [-- claude-args...]` | Re-adopt an existing Claude session as a worker (claude-only) |
 | `csd list [--all]` | List active (or all) workers |
 | `csd grant-consent` | One-time consent flow (required before first launch) |
+| `csd grant-workspace-trust <cwd>` | Interactively allow CSD to accept Claude's workspace trust prompt for one canonical directory |
 
 `csd launch` prints the shim path to stdout (deterministic at `/tmp/csd-workers/bin/<name>`) and a human-readable panel to stderr. Capture it:
 
@@ -63,6 +64,29 @@ WORKER=$(csd launch my-worker /path/to/project)
 ```
 
 The worker dir defaults to `/tmp/csd-workers` (renamed from `/tmp/claude-workers`; a back-compat symlink `/tmp/claude-workers → /tmp/csd-workers` is created when the default is in use). Override it with `CSD_WORKER_DIR`.
+
+### Claude workspace trust
+
+If Claude opens its workspace trust dialog, CSD accepts it only when that exact
+canonical directory has a CSD-owned grant. Create one from an interactive
+terminal:
+
+```bash
+csd grant-workspace-trust /path/to/project
+```
+
+The command resolves the directory with `realpath`, shows the canonical result,
+and requires you to type that complete path exactly. It stores an owner-only,
+hashed per-workspace record under `~/.claude/.claude-session-driver/`; it does
+not directly edit Claude's `~/.claude.json`. When CSD later accepts a prompt,
+Claude Code remains responsible for its own trust persistence semantics.
+
+Without a grant, `launch` or `adopt` tears down the new worker as soon as the
+workspace trust prompt appears and prints the exact grant command. With a grant,
+CSD watches for the prompt throughout the full start window and confirms it
+when it appears, including on later launches from the home directory where
+Claude intentionally does not persist trust. A workspace grant never authorizes
+separate prompts such as external `CLAUDE.md` imports.
 
 ### Per-worker subcommands
 
