@@ -22,17 +22,19 @@ var cli_exports = {};
 __export(cli_exports, {
   followStream: () => followStream,
   grantConsentConfirm: () => grantConsentConfirm,
+  grantWorkspaceTrustConfirm: () => grantWorkspaceTrustConfirm,
+  readExactLine: () => readExactLine,
   readLine: () => readLine,
   run: () => run2
 });
 module.exports = __toCommonJS(cli_exports);
 var import_node_os3 = require("os");
-var import_node_path8 = require("path");
+var import_node_path9 = require("path");
 var import_node_readline = require("readline");
 
 // src/commands/adopt.ts
-var import_node_fs8 = require("fs");
-var import_node_path6 = require("path");
+var import_node_fs9 = require("fs");
+var import_node_path7 = require("path");
 
 // src/core/consent.ts
 var import_node_fs = require("fs");
@@ -49,8 +51,64 @@ function grantConsent(home) {
   (0, import_node_fs.writeFileSync)(p, "");
 }
 
-// src/core/paths.ts
+// src/core/event-log.ts
 var import_node_fs2 = require("fs");
+
+// src/events.ts
+var EVENT_NAMES = [
+  "session_start",
+  "user_prompt_submit",
+  "pre_tool_use",
+  "post_tool_use",
+  "stop",
+  "stop_failure",
+  "session_end"
+];
+function parseEvent(line) {
+  let v;
+  try {
+    v = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null) return null;
+  const event = v.event;
+  if (typeof event !== "string" || !EVENT_NAMES.includes(event))
+    return null;
+  return v;
+}
+
+// src/core/event-log.ts
+function readRawLines(file) {
+  if (!(0, import_node_fs2.existsSync)(file)) return [];
+  return (0, import_node_fs2.readFileSync)(file, "utf8").split("\n").filter((line) => line.length > 0);
+}
+function lastEvent(file) {
+  const lines = readRawLines(file);
+  const last = lines.at(-1);
+  return last === void 0 ? null : parseEvent(last);
+}
+function classifyStatus(last) {
+  switch (last.event) {
+    case "session_end":
+      return "terminated";
+    case "user_prompt_submit":
+    case "pre_tool_use":
+    case "post_tool_use":
+      return "working";
+    case "stop":
+    case "stop_failure":
+    case "session_start":
+      return "idle";
+    default: {
+      const _exhaustive = last;
+      return _exhaustive;
+    }
+  }
+}
+
+// src/core/paths.ts
+var import_node_fs3 = require("fs");
 var DEFAULT_WORKER_DIR = "/tmp/csd-workers";
 var BACK_COMPAT_LINK = "/tmp/claude-workers";
 function workerDir() {
@@ -76,9 +134,9 @@ function claudeTranscriptPath(home, cwd, sid) {
 }
 function ensureBackCompatSymlink(dir) {
   if (dir !== DEFAULT_WORKER_DIR) return;
-  if ((0, import_node_fs2.existsSync)(BACK_COMPAT_LINK)) return;
+  if ((0, import_node_fs3.existsSync)(BACK_COMPAT_LINK)) return;
   try {
-    (0, import_node_fs2.symlinkSync)(DEFAULT_WORKER_DIR, BACK_COMPAT_LINK);
+    (0, import_node_fs3.symlinkSync)(DEFAULT_WORKER_DIR, BACK_COMPAT_LINK);
   } catch {
   }
 }
@@ -89,31 +147,31 @@ function isoSecondsUtc(date = /* @__PURE__ */ new Date()) {
 }
 
 // src/core/worker-store.ts
-var import_node_fs3 = require("fs");
+var import_node_fs4 = require("fs");
 var import_node_path2 = require("path");
 function writeMeta(dir, meta) {
-  (0, import_node_fs3.mkdirSync)(dir, { recursive: true });
-  (0, import_node_fs3.writeFileSync)(metaPath(dir, meta.session_id), JSON.stringify(meta));
+  (0, import_node_fs4.mkdirSync)(dir, { recursive: true });
+  (0, import_node_fs4.writeFileSync)(metaPath(dir, meta.session_id), JSON.stringify(meta));
 }
 function readMeta(dir, sid) {
   const p = metaPath(dir, sid);
-  if (!(0, import_node_fs3.existsSync)(p)) return null;
+  if (!(0, import_node_fs4.existsSync)(p)) return null;
   try {
-    return JSON.parse((0, import_node_fs3.readFileSync)(p, "utf8"));
+    return JSON.parse((0, import_node_fs4.readFileSync)(p, "utf8"));
   } catch {
     return null;
   }
 }
 function listWorkers(dir) {
-  if (!(0, import_node_fs3.existsSync)(dir)) return [];
-  return (0, import_node_fs3.readdirSync)(dir).filter((f) => f.endsWith(".meta")).flatMap((f) => {
+  if (!(0, import_node_fs4.existsSync)(dir)) return [];
+  return (0, import_node_fs4.readdirSync)(dir).filter((f) => f.endsWith(".meta")).flatMap((f) => {
     const sid = f.slice(0, -".meta".length);
     const meta = readMeta(dir, sid);
     return meta !== null ? [meta] : [];
   });
 }
 function resolveSession(dir, arg) {
-  if ((0, import_node_fs3.existsSync)(metaPath(dir, arg)) || (0, import_node_fs3.existsSync)(eventsPath(dir, arg))) {
+  if ((0, import_node_fs4.existsSync)(metaPath(dir, arg)) || (0, import_node_fs4.existsSync)(eventsPath(dir, arg))) {
     return arg;
   }
   const match = listWorkers(dir).find((m) => m.tmux_name === arg);
@@ -121,52 +179,52 @@ function resolveSession(dir, arg) {
 }
 function writeShim(dir, name, csdEntry) {
   const p = shimPath(dir, name);
-  (0, import_node_fs3.mkdirSync)((0, import_node_path2.dirname)(p), { recursive: true });
+  (0, import_node_fs4.mkdirSync)((0, import_node_path2.dirname)(p), { recursive: true });
   const content = `#!/usr/bin/env bash
 exec node "${csdEntry}" --worker "${name}" "$@"
 `;
-  (0, import_node_fs3.writeFileSync)(p, content);
-  (0, import_node_fs3.chmodSync)(p, 493);
+  (0, import_node_fs4.writeFileSync)(p, content);
+  (0, import_node_fs4.chmodSync)(p, 493);
   return p;
 }
 function writeHarnessMarker(dir, name, harness) {
-  (0, import_node_fs3.mkdirSync)(dir, { recursive: true });
-  (0, import_node_fs3.writeFileSync)(harnessMarkerPath(dir, name), harness);
+  (0, import_node_fs4.mkdirSync)(dir, { recursive: true });
+  (0, import_node_fs4.writeFileSync)(harnessMarkerPath(dir, name), harness);
 }
 function readHarnessMarker(dir, name) {
   const p = harnessMarkerPath(dir, name);
-  if (!(0, import_node_fs3.existsSync)(p)) return null;
+  if (!(0, import_node_fs4.existsSync)(p)) return null;
   try {
-    return (0, import_node_fs3.readFileSync)(p, "utf8").trim() || null;
+    return (0, import_node_fs4.readFileSync)(p, "utf8").trim() || null;
   } catch {
     return null;
   }
 }
 function removeWorker(dir, sid, name) {
-  (0, import_node_fs3.rmSync)(metaPath(dir, sid), { force: true });
-  (0, import_node_fs3.rmSync)(eventsPath(dir, sid), { force: true });
-  (0, import_node_fs3.rmSync)(shimPath(dir, name), { force: true });
-  (0, import_node_fs3.rmSync)(harnessMarkerPath(dir, name), { force: true });
-  (0, import_node_fs3.rmSync)(workerHomePath(dir, name), { recursive: true, force: true });
+  (0, import_node_fs4.rmSync)(metaPath(dir, sid), { force: true });
+  (0, import_node_fs4.rmSync)(eventsPath(dir, sid), { force: true });
+  (0, import_node_fs4.rmSync)(shimPath(dir, name), { force: true });
+  (0, import_node_fs4.rmSync)(harnessMarkerPath(dir, name), { force: true });
+  (0, import_node_fs4.rmSync)(workerHomePath(dir, name), { recursive: true, force: true });
 }
 function listOrphanNames(dir) {
   const registered = new Set(listWorkers(dir).map((m) => m.tmux_name));
   const names = /* @__PURE__ */ new Set();
-  if ((0, import_node_fs3.existsSync)(dir)) {
-    for (const f of (0, import_node_fs3.readdirSync)(dir)) {
+  if ((0, import_node_fs4.existsSync)(dir)) {
+    for (const f of (0, import_node_fs4.readdirSync)(dir)) {
       if (f.endsWith(".harness")) names.add(f.slice(0, -".harness".length));
     }
   }
   const bin = (0, import_node_path2.join)(dir, "bin");
-  if ((0, import_node_fs3.existsSync)(bin)) {
-    for (const f of (0, import_node_fs3.readdirSync)(bin)) names.add(f);
+  if ((0, import_node_fs4.existsSync)(bin)) {
+    for (const f of (0, import_node_fs4.readdirSync)(bin)) names.add(f);
   }
   return [...names].filter((n) => !registered.has(n));
 }
 function removeOrphan(dir, name) {
-  (0, import_node_fs3.rmSync)(shimPath(dir, name), { force: true });
-  (0, import_node_fs3.rmSync)(harnessMarkerPath(dir, name), { force: true });
-  (0, import_node_fs3.rmSync)(workerHomePath(dir, name), { recursive: true, force: true });
+  (0, import_node_fs4.rmSync)(shimPath(dir, name), { force: true });
+  (0, import_node_fs4.rmSync)(harnessMarkerPath(dir, name), { force: true });
+  (0, import_node_fs4.rmSync)(workerHomePath(dir, name), { recursive: true, force: true });
 }
 
 // src/core/tool-name.ts
@@ -558,7 +616,7 @@ var claude = {
 };
 
 // src/harness/codex.ts
-var import_node_fs4 = require("fs");
+var import_node_fs5 = require("fs");
 var import_node_os = require("os");
 var import_node_path3 = require("path");
 
@@ -680,10 +738,10 @@ var codex = {
     ];
   },
   async prepare(tmuxName, cwd, workerHome) {
-    (0, import_node_fs4.mkdirSync)(workerHome, { recursive: true });
+    (0, import_node_fs5.mkdirSync)(workerHome, { recursive: true });
     const auth = (0, import_node_path3.join)((0, import_node_os.homedir)(), ".codex", "auth.json");
-    if ((0, import_node_fs4.existsSync)(auth)) {
-      (0, import_node_fs4.copyFileSync)(auth, (0, import_node_path3.join)(workerHome, "auth.json"));
+    if ((0, import_node_fs5.existsSync)(auth)) {
+      (0, import_node_fs5.copyFileSync)(auth, (0, import_node_path3.join)(workerHome, "auth.json"));
     }
     const hookCommand = [
       "node",
@@ -697,7 +755,7 @@ var codex = {
       model: process.env.CSD_CODEX_MODEL ?? DEFAULT_MODEL,
       hookCommand
     });
-    (0, import_node_fs4.writeFileSync)((0, import_node_path3.join)(workerHome, "config.toml"), config);
+    (0, import_node_fs5.writeFileSync)((0, import_node_path3.join)(workerHome, "config.toml"), config);
   },
   // The trust-gate dismissal needs the tmux pane, which this interface does not
   // pass the driver. Codex's "Hooks need review" gate is dismissed by the launch
@@ -723,7 +781,7 @@ var codex = {
 };
 
 // src/harness/pi.ts
-var import_node_fs5 = require("fs");
+var import_node_fs6 = require("fs");
 var import_node_os2 = require("os");
 var import_node_path4 = require("path");
 var PI_AUTH_FILES = ["auth.json", "models.json", "settings.json"];
@@ -779,12 +837,12 @@ var pi = {
   // exists and stage the operator's pi credentials so the worker authenticates
   // as them. Best-effort: a missing operator file is skipped, never fatal.
   async prepare(_tmuxName, _cwd, workerHome) {
-    (0, import_node_fs5.mkdirSync)(workerHome, { recursive: true });
+    (0, import_node_fs6.mkdirSync)(workerHome, { recursive: true });
     const agentDir = operatorAgentDir();
     for (const name of PI_AUTH_FILES) {
       const src = (0, import_node_path4.join)(agentDir, name);
-      if ((0, import_node_fs5.existsSync)(src)) {
-        (0, import_node_fs5.copyFileSync)(src, (0, import_node_path4.join)(workerHome, name));
+      if ((0, import_node_fs6.existsSync)(src)) {
+        (0, import_node_fs6.copyFileSync)(src, (0, import_node_path4.join)(workerHome, name));
       }
     }
   },
@@ -827,92 +885,110 @@ function getDriver(id) {
   return driver;
 }
 
-// src/core/event-log.ts
-var import_node_fs6 = require("fs");
+// src/core/csd-command.ts
+function runnableCsd(csdPath) {
+  return /\.[cm]?js$/.test(csdPath) ? `node ${shellQuote(csdPath)}` : shellQuote(csdPath);
+}
+function renderCsdCommand(csdPath, args) {
+  const renderedArgs = args.map(shellQuote).join(" ");
+  return renderedArgs.length > 0 ? `${runnableCsd(csdPath)} ${renderedArgs}` : runnableCsd(csdPath);
+}
 
-// src/events.ts
-var EVENT_NAMES = [
-  "session_start",
-  "user_prompt_submit",
-  "pre_tool_use",
-  "post_tool_use",
-  "stop",
-  "session_end"
-];
-function parseEvent(line) {
-  let v;
+// src/core/workspace-trust.ts
+var import_node_crypto = require("crypto");
+var import_node_fs7 = require("fs");
+var import_node_path5 = require("path");
+function workspaceTrustRoot(home) {
+  return (0, import_node_path5.join)(home, ".claude", ".claude-session-driver", "workspace-trust");
+}
+function workspaceKey(canonicalCwd) {
+  return (0, import_node_crypto.createHash)("sha256").update(canonicalCwd).digest("hex");
+}
+function workspaceTrustGrantPath(home, canonicalCwd) {
+  return (0, import_node_path5.join)(workspaceTrustRoot(home), `${workspaceKey(canonicalCwd)}.json`);
+}
+function hasWorkspaceTrustGrant(home, canonicalCwd) {
+  const path = workspaceTrustGrantPath(home, canonicalCwd);
   try {
-    v = JSON.parse(line);
+    const stat = (0, import_node_fs7.lstatSync)(path);
+    if (!stat.isFile() || (stat.mode & 63) !== 0) return false;
+    const value = JSON.parse((0, import_node_fs7.readFileSync)(path, "utf8"));
+    if (typeof value !== "object" || value === null) return false;
+    const grant = value;
+    return grant.version === 1 && grant.cwd === canonicalCwd;
   } catch {
-    return null;
+    return false;
   }
-  if (typeof v !== "object" || v === null) return null;
-  const event = v.event;
-  if (typeof event !== "string" || !EVENT_NAMES.includes(event))
-    return null;
-  return v;
 }
-
-// src/core/event-log.ts
-function readRawLines(file) {
-  if (!(0, import_node_fs6.existsSync)(file)) return [];
-  return (0, import_node_fs6.readFileSync)(file, "utf8").split("\n").filter((line) => line.length > 0);
-}
-function lastEvent(file) {
-  const lines = readRawLines(file);
-  const last = lines.at(-1);
-  return last === void 0 ? null : parseEvent(last);
-}
-function classifyStatus(last) {
-  switch (last.event) {
-    case "session_end":
-      return "terminated";
-    case "user_prompt_submit":
-    case "pre_tool_use":
-    case "post_tool_use":
-      return "working";
-    case "stop":
-    case "session_start":
-      return "idle";
-    default: {
-      const _exhaustive = last;
-      return _exhaustive;
-    }
+function grantWorkspaceTrust(home, canonicalCwd) {
+  const root = workspaceTrustRoot(home);
+  (0, import_node_fs7.mkdirSync)(root, { recursive: true, mode: 448 });
+  if (!(0, import_node_fs7.lstatSync)(root).isDirectory()) {
+    throw new Error(`Workspace trust root is not a directory: ${root}`);
+  }
+  (0, import_node_fs7.chmodSync)(root, 448);
+  const path = workspaceTrustGrantPath(home, canonicalCwd);
+  const temporary = (0, import_node_path5.join)(
+    root,
+    `.${workspaceKey(canonicalCwd)}.${(0, import_node_crypto.randomUUID)()}.tmp`
+  );
+  const grant = { version: 1, cwd: canonicalCwd };
+  try {
+    (0, import_node_fs7.writeFileSync)(temporary, `${JSON.stringify(grant)}
+`, {
+      flag: "wx",
+      mode: 384
+    });
+    (0, import_node_fs7.renameSync)(temporary, path);
+  } finally {
+    (0, import_node_fs7.rmSync)(temporary, { force: true });
   }
 }
 
 // src/commands/await-start.ts
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-var DEFAULT_TRUST_TIMEOUT_MS = 5e3;
 var DEFAULT_START_TIMEOUT_MS = 3e4;
 var DEFAULT_POLL_MS = 250;
-function sawSessionStart(eventFile) {
-  return readRawLines(eventFile).some(
-    (line) => parseEvent(line)?.event === "session_start"
-  );
+var WORKSPACE_TRUST_CONFIRM = /yes,\s*i\s+trust\s+this\s+folder/i;
+var WORKSPACE_TRUST_CANCEL = /no,\s*(?:exit|continue\s+without\s+these\s+permissions)/i;
+function isWorkspaceTrustPrompt(pane) {
+  return WORKSPACE_TRUST_CONFIRM.test(pane) && WORKSPACE_TRUST_CANCEL.test(pane);
+}
+function sawSessionStart(eventFile, afterLine) {
+  return readRawLines(eventFile).slice(afterLine).some((line) => parseEvent(line)?.event === "session_start");
 }
 function paneTail(pane, n) {
   return pane.split("\n").map((line) => line.replace(/\s+$/, "")).filter((line) => line.length > 0).slice(-n).join("\n");
 }
-async function awaitSessionStart(ctx, tmuxName, sessionId, opts = {}) {
-  const trustTimeoutMs = opts.trustTimeoutMs ?? DEFAULT_TRUST_TIMEOUT_MS;
+async function awaitSessionStart(ctx, tmuxName, sessionId, opts) {
   const startTimeoutMs = opts.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
   const eventFile = eventsPath(ctx.workerDir, sessionId);
-  const trustDeadline = Date.now() + trustTimeoutMs;
-  while (Date.now() < trustDeadline) {
-    if (sawSessionStart(eventFile)) break;
-    const pane = await ctx.tmux.capturePane(tmuxName);
-    if (pane.includes("trust this folder")) {
-      await ctx.tmux.sendEnter(tmuxName);
-      break;
-    }
-    await sleep(pollMs);
-  }
   const startDeadline = Date.now() + startTimeoutMs;
+  let workspaceTrustHandled = false;
   while (Date.now() < startDeadline) {
-    if (sawSessionStart(eventFile)) {
+    if (sawSessionStart(eventFile, opts.afterLine)) {
       return { started: true };
+    }
+    let pane = "";
+    try {
+      pane = await ctx.tmux.capturePane(tmuxName);
+    } catch {
+    }
+    if (!workspaceTrustHandled && isWorkspaceTrustPrompt(pane)) {
+      if (!hasWorkspaceTrustGrant(ctx.home, opts.cwd)) {
+        return {
+          started: false,
+          failureMessage: [
+            `Error: Claude requires workspace trust for ${opts.cwd}.`,
+            "CSD did not accept the prompt because this canonical workspace has no grant.",
+            `Run interactively: ${renderCsdCommand(opts.csdPath, ["grant-workspace-trust", opts.cwd])}`,
+            "Then launch or adopt the worker again."
+          ].join("\n")
+        };
+      }
+      await ctx.tmux.sendEnter(tmuxName);
+      workspaceTrustHandled = true;
     }
     await sleep(pollMs);
   }
@@ -931,19 +1007,17 @@ async function awaitSessionStart(ctx, tmuxName, sessionId, opts = {}) {
       "----------"
     );
   }
-  await ctx.tmux.killSession(tmuxName);
-  removeWorker(ctx.workerDir, sessionId, tmuxName);
   return { started: false, failureMessage: lines.join("\n") };
 }
 
 // src/commands/launch.ts
-var import_node_crypto = require("crypto");
-var import_node_fs7 = require("fs");
-var import_node_path5 = require("path");
+var import_node_crypto2 = require("crypto");
+var import_node_fs8 = require("fs");
+var import_node_path6 = require("path");
 
 // src/commands/codex-launch.ts
 var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
-var DEFAULT_TRUST_TIMEOUT_MS2 = 8e3;
+var DEFAULT_TRUST_TIMEOUT_MS = 8e3;
 var DEFAULT_TRUST_POLL_MS = 250;
 var DEFAULT_TRUST_SETTLE_MS = 300;
 var DEFAULT_READY_TIMEOUT_MS = 2e4;
@@ -951,7 +1025,7 @@ var DEFAULT_READY_POLL_MS = 500;
 var COMPOSER_GLYPH = "\u203A";
 var TRUST_GATE = /hooks need review|trust all and continue|trust all/i;
 async function dismissCodexTrustGate(ctx, tmuxName, opts = {}) {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TRUST_TIMEOUT_MS2;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TRUST_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? DEFAULT_TRUST_POLL_MS;
   const settleMs = opts.settleMs ?? DEFAULT_TRUST_SETTLE_MS;
   const deadline = Date.now() + timeoutMs;
@@ -1011,26 +1085,28 @@ async function capture2(ctx, tmuxName) {
 function consentError(csdPath) {
   return {
     stderr: `Error: claude-session-driver requires one-time consent before launching workers.
-Run: ${csdPath} grant-consent`,
+Run: ${renderCsdCommand(csdPath, ["grant-consent"])}`,
     code: 1
   };
 }
 function resolveCwd(cwd) {
-  if (!(0, import_node_fs7.existsSync)(cwd) || !(0, import_node_fs7.statSync)(cwd).isDirectory()) {
+  if (!(0, import_node_fs8.existsSync)(cwd) || !(0, import_node_fs8.statSync)(cwd).isDirectory()) {
     return { stderr: `Error: cwd '${cwd}' does not exist`, code: 1 };
   }
-  return (0, import_node_fs7.realpathSync)(cwd);
+  return (0, import_node_fs8.realpathSync)(cwd);
 }
 function renderPanel(opts) {
-  const reproduceArgs = opts.invocation.map(shellQuote).join(" ");
-  const runnableCsd = /\.[cm]?js$/.test(opts.csdPath) ? `node ${shellQuote(opts.csdPath)}` : shellQuote(opts.csdPath);
+  const reproduce = renderCsdCommand(opts.csdPath, [
+    opts.verb,
+    ...opts.invocation
+  ]);
   return [
     opts.header,
     `  tmux:       ${opts.tmuxName}`,
     `  session_id: ${opts.sessionId}`,
     `  cwd:        ${opts.cwd}`,
     `  events:     ${opts.eventsFile}`,
-    `  reproduce: ${runnableCsd} ${opts.verb} ${reproduceArgs}`
+    `  reproduce: ${reproduce}`
   ].join("\n");
 }
 function deriveWorkerHome(workerDir2, tmuxName) {
@@ -1049,14 +1125,14 @@ async function cmdLaunch(ctx, args, opts) {
       code: 1
     };
   }
-  (0, import_node_fs7.mkdirSync)(ctx.workerDir, { recursive: true });
-  (0, import_node_fs7.mkdirSync)((0, import_node_path5.join)(ctx.workerDir, "bin"), { recursive: true });
+  (0, import_node_fs8.mkdirSync)(ctx.workerDir, { recursive: true });
+  (0, import_node_fs8.mkdirSync)((0, import_node_path6.join)(ctx.workerDir, "bin"), { recursive: true });
   ensureBackCompatSymlink(ctx.workerDir);
   const invocation = extraArgs.length > 0 ? [tmuxName, cwd, "--", ...extraArgs] : [tmuxName, cwd];
   return driver.idStrategy === "derive" ? launchDerive(ctx, { driver, tmuxName, cwd, extraArgs, invocation }, opts) : launchAssign(ctx, { driver, tmuxName, cwd, extraArgs, invocation }, opts);
 }
 async function launchAssign(ctx, { driver, tmuxName, cwd, extraArgs, invocation }, opts) {
-  const sessionId = (0, import_node_crypto.randomUUID)();
+  const sessionId = (0, import_node_crypto2.randomUUID)();
   writeMeta(ctx.workerDir, {
     tmux_name: tmuxName,
     session_id: sessionId,
@@ -1071,10 +1147,24 @@ async function launchAssign(ctx, { driver, tmuxName, cwd, extraArgs, invocation 
     ...driver.launchArgv("launch", sessionId, cwd, opts.pluginDir, ctx.home),
     ...extraArgs
   ];
+  const eventLineBaseline = readRawLines(
+    eventsPath(ctx.workerDir, sessionId)
+  ).length;
   await ctx.tmux.newSession(tmuxName, cwd, env, argv);
   await driver.postLaunch(tmuxName);
-  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, opts);
+  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, {
+    cwd,
+    csdPath: opts.csdPath,
+    afterLine: eventLineBaseline,
+    startTimeoutMs: opts.startTimeoutMs,
+    pollMs: opts.pollMs
+  });
   if (!proof.started) {
+    try {
+      await ctx.tmux.killSession(tmuxName);
+    } finally {
+      removeWorker(ctx.workerDir, sessionId, tmuxName);
+    }
     return { stderr: proof.failureMessage, code: 1 };
   }
   const shim = writeShim(ctx.workerDir, tmuxName, opts.csdEntry);
@@ -1133,6 +1223,35 @@ async function launchDerive(ctx, { driver, tmuxName, cwd, extraArgs, invocation 
 
 // src/commands/adopt.ts
 var CLAUDE_SESSION_ID = /^[0-9a-fA-F][0-9a-fA-F-]{7,}$/;
+async function snapshotAdoptState(ctx, tmuxName, sessionId) {
+  const metaFile = metaPath(ctx.workerDir, sessionId);
+  return {
+    tmuxExisted: await ctx.tmux.hasSession(tmuxName),
+    metaContents: (0, import_node_fs9.existsSync)(metaFile) ? (0, import_node_fs9.readFileSync)(metaFile) : null,
+    eventsExisted: (0, import_node_fs9.existsSync)(eventsPath(ctx.workerDir, sessionId)),
+    shimExisted: (0, import_node_fs9.existsSync)(shimPath(ctx.workerDir, tmuxName))
+  };
+}
+async function rollbackFailedAdopt(ctx, tmuxName, sessionId, snapshot) {
+  try {
+    if (!snapshot.tmuxExisted) {
+      await ctx.tmux.killSession(tmuxName);
+    }
+  } finally {
+    const metaFile = metaPath(ctx.workerDir, sessionId);
+    if (snapshot.metaContents === null) {
+      (0, import_node_fs9.rmSync)(metaFile, { force: true });
+    } else {
+      (0, import_node_fs9.writeFileSync)(metaFile, snapshot.metaContents);
+    }
+    if (!snapshot.eventsExisted) {
+      (0, import_node_fs9.rmSync)(eventsPath(ctx.workerDir, sessionId), { force: true });
+    }
+    if (!snapshot.shimExisted) {
+      (0, import_node_fs9.rmSync)(shimPath(ctx.workerDir, tmuxName), { force: true });
+    }
+  }
+}
 async function cmdAdopt(ctx, args, opts) {
   const { tmuxName, sessionId, extraArgs } = args;
   const driver = getDriver("claude");
@@ -1154,14 +1273,15 @@ async function cmdAdopt(ctx, args, opts) {
     };
   }
   const transcript = driver.transcriptPath(sessionId, cwd, ctx.home);
-  if (!(0, import_node_fs8.existsSync)(transcript)) {
+  if (!(0, import_node_fs9.existsSync)(transcript)) {
     return {
       stderr: `Error: no transcript found for session '${sessionId}' under ${cwd} (expected ${transcript}); it cannot be adopted \u2014 check the session id and cwd.`,
       code: 1
     };
   }
-  (0, import_node_fs8.mkdirSync)(ctx.workerDir, { recursive: true });
-  (0, import_node_fs8.mkdirSync)((0, import_node_path6.join)(ctx.workerDir, "bin"), { recursive: true });
+  const preexisting = await snapshotAdoptState(ctx, tmuxName, sessionId);
+  (0, import_node_fs9.mkdirSync)(ctx.workerDir, { recursive: true });
+  (0, import_node_fs9.mkdirSync)((0, import_node_path7.join)(ctx.workerDir, "bin"), { recursive: true });
   ensureBackCompatSymlink(ctx.workerDir);
   const invocation = extraArgs.length > 0 ? [tmuxName, cwd, sessionId, "--", ...extraArgs] : [tmuxName, cwd, sessionId];
   writeMeta(ctx.workerDir, {
@@ -1178,8 +1298,11 @@ async function cmdAdopt(ctx, args, opts) {
     ...driver.launchArgv("adopt", sessionId, cwd, opts.pluginDir, ctx.home),
     ...extraArgs
   ];
+  const eventLineBaseline = readRawLines(
+    eventsPath(ctx.workerDir, sessionId)
+  ).length;
   let mode;
-  if (await ctx.tmux.hasSession(tmuxName)) {
+  if (preexisting.tmuxExisted) {
     mode = "respawned existing pane";
     await ctx.tmux.respawnPane(tmuxName, cwd, env, argv);
   } else {
@@ -1187,8 +1310,15 @@ async function cmdAdopt(ctx, args, opts) {
     await ctx.tmux.newSession(tmuxName, cwd, env, argv);
   }
   await driver.postLaunch(tmuxName);
-  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, opts);
+  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, {
+    cwd,
+    csdPath: opts.csdPath,
+    afterLine: eventLineBaseline,
+    startTimeoutMs: opts.startTimeoutMs,
+    pollMs: opts.pollMs
+  });
   if (!proof.started) {
+    await rollbackFailedAdopt(ctx, tmuxName, sessionId, preexisting);
     return { stderr: proof.failureMessage, code: 1 };
   }
   const shim = writeShim(ctx.workerDir, tmuxName, opts.csdEntry);
@@ -1206,11 +1336,11 @@ async function cmdAdopt(ctx, args, opts) {
 }
 
 // src/commands/converse.ts
-var import_node_fs11 = require("fs");
+var import_node_fs13 = require("fs");
 
 // src/core/diagnostics.ts
-var import_node_fs9 = require("fs");
-var import_node_path7 = require("path");
+var import_node_fs10 = require("fs");
+var import_node_path8 = require("path");
 
 // src/core/proc.ts
 var import_node_child_process = require("child_process");
@@ -1259,9 +1389,9 @@ async function paneCapture(tmux2, tmuxName) {
   }
 }
 function fileTail(file, n, missingNote) {
-  if (!(0, import_node_fs9.existsSync)(file)) return missingNote;
+  if (!(0, import_node_fs10.existsSync)(file)) return missingNote;
   try {
-    return tailLines((0, import_node_fs9.readFileSync)(file, "utf8"), n);
+    return tailLines((0, import_node_fs10.readFileSync)(file, "utf8"), n);
   } catch (e) {
     return `(read failed: ${errText(e)})`;
   }
@@ -1269,7 +1399,7 @@ function fileTail(file, n, missingNote) {
 async function dumpConverseDiag(opts) {
   const run3 = opts.run ?? run;
   try {
-    (0, import_node_fs9.mkdirSync)((0, import_node_path7.dirname)(opts.dest), { recursive: true });
+    (0, import_node_fs10.mkdirSync)((0, import_node_path8.dirname)(opts.dest), { recursive: true });
   } catch {
     return false;
   }
@@ -1295,12 +1425,273 @@ async function dumpConverseDiag(opts) {
     "=== end csd diagnostic ==="
   ];
   try {
-    (0, import_node_fs9.writeFileSync)(opts.dest, `${sections.join("\n")}
+    (0, import_node_fs10.writeFileSync)(opts.dest, `${sections.join("\n")}
 `);
   } catch {
     return false;
   }
   return true;
+}
+
+// src/harness/claude-terminal-tail.ts
+var import_node_crypto3 = require("crypto");
+var import_node_fs11 = require("fs");
+var import_node_util = require("util");
+var MAX_TRANSCRIPT_CAPTURE_BYTES = 1024 * 1024;
+var MAX_TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
+var decoder = new import_node_util.TextDecoder("utf-8", { fatal: true });
+var CLAUDE_CHAIN_TYPES = /* @__PURE__ */ new Set([
+  "user",
+  "assistant",
+  "attachment",
+  "system",
+  "progress"
+]);
+function readExact(fd, start, length) {
+  const buffer = Buffer.alloc(length);
+  let offset = 0;
+  try {
+    while (offset < length) {
+      const count = (0, import_node_fs11.readSync)(
+        fd,
+        buffer,
+        offset,
+        length - offset,
+        start + offset
+      );
+      if (count === 0) return null;
+      offset += count;
+    }
+  } catch {
+    return null;
+  }
+  return buffer;
+}
+function parseRecord(bytes) {
+  try {
+    const value = JSON.parse(decoder.decode(bytes));
+    return typeof value === "object" && value !== null ? value : null;
+  } catch {
+    return null;
+  }
+}
+function digest(bytes) {
+  return (0, import_node_crypto3.createHash)("sha256").update(bytes).digest("hex");
+}
+function openTranscript(file) {
+  try {
+    const fd = (0, import_node_fs11.openSync)(file, "r");
+    try {
+      const stat = (0, import_node_fs11.fstatSync)(fd);
+      if (!stat.isFile()) {
+        (0, import_node_fs11.closeSync)(fd);
+        return null;
+      }
+      return { fd, stat };
+    } catch {
+      (0, import_node_fs11.closeSync)(fd);
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+function captureClaudeTranscriptAnchor(file) {
+  const opened = openTranscript(file);
+  if (opened === null) return null;
+  const { fd, stat } = opened;
+  try {
+    if (stat.size === 0) return null;
+    const windowStart = Math.max(0, stat.size - MAX_TRANSCRIPT_CAPTURE_BYTES);
+    const window = readExact(fd, windowStart, stat.size - windowStart);
+    if (window === null) return null;
+    let cursor = 0;
+    if (windowStart > 0) {
+      const firstNewline = window.indexOf(10);
+      if (firstNewline < 0) return null;
+      cursor = firstNewline + 1;
+    }
+    let last;
+    while (cursor < window.length) {
+      const newline = window.indexOf(10, cursor);
+      const lineEnd = newline < 0 ? window.length : newline;
+      if (lineEnd > cursor) {
+        const parsed = parseRecord(window.subarray(cursor, lineEnd));
+        if (parsed === null) return null;
+        if (typeof parsed.uuid === "string") {
+          if (parsed.isSidechain === true || typeof parsed.type !== "string" || !CLAUDE_CHAIN_TYPES.has(parsed.type)) {
+            return null;
+          }
+          last = {
+            uuid: parsed.uuid,
+            lineStart: windowStart + cursor,
+            lineEnd: windowStart + lineEnd,
+            afterOffset: windowStart + lineEnd + (newline < 0 ? 0 : 1),
+            newlineTerminated: newline >= 0
+          };
+        }
+      }
+      if (newline < 0) break;
+      cursor = newline + 1;
+    }
+    if (last === void 0) return null;
+    const snapshotStart = last.lineStart - windowStart;
+    return {
+      ...last,
+      capturedSize: stat.size,
+      device: stat.dev,
+      inode: stat.ino,
+      snapshotDigest: digest(window.subarray(snapshotStart))
+    };
+  } finally {
+    (0, import_node_fs11.closeSync)(fd);
+  }
+}
+function parseJsonl(bytes) {
+  const records = [];
+  let cursor = 0;
+  while (cursor < bytes.length) {
+    const newline = bytes.indexOf(10, cursor);
+    const lineEnd = newline < 0 ? bytes.length : newline;
+    if (lineEnd > cursor) {
+      const parsed = parseRecord(bytes.subarray(cursor, lineEnd));
+      if (parsed === null) return null;
+      records.push(parsed);
+    }
+    if (newline < 0) break;
+    cursor = newline + 1;
+  }
+  return records;
+}
+function assistantContent(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item) => typeof item === "object" && item !== null
+  );
+}
+function message(record) {
+  const value = record.message;
+  return typeof value === "object" && value !== null ? value : {};
+}
+function substantiveAssistant(record) {
+  if (record.type !== "assistant") return false;
+  const content = message(record).content;
+  if (typeof content === "string") return content.length > 0;
+  return assistantContent(content).some(
+    (block) => block.type === "tool_use" || block.type === "text" && typeof block.text === "string" && block.text.length > 0
+  );
+}
+function assistantText2(record) {
+  const content = message(record).content;
+  if (typeof content === "string")
+    return content.length > 0 ? content : void 0;
+  const text = assistantContent(content).filter((block) => block.type === "text" && typeof block.text === "string").map((block) => block.text).join("");
+  return text.length > 0 ? text : void 0;
+}
+function descendsFromAnchor(candidate, anchor, byUuid) {
+  const seen = /* @__PURE__ */ new Set();
+  let parent = candidate.parentUuid;
+  while (typeof parent === "string") {
+    if (parent === anchor.uuid) return null;
+    if (seen.has(parent)) return "api_error_not_descendant";
+    seen.add(parent);
+    const record = byUuid.get(parent);
+    if (record === void 0) return "api_error_not_descendant";
+    if (record.isSidechain === true) return "sidechain_api_error";
+    if (typeof record.type !== "string" || !CLAUDE_CHAIN_TYPES.has(record.type)) {
+      return "unknown_chain_record";
+    }
+    parent = record.parentUuid;
+  }
+  return "api_error_not_descendant";
+}
+function indeterminate(file, reason) {
+  return { kind: "indeterminate", reason, transcriptPath: file };
+}
+function inspectClaudeTerminalTail(file, anchor) {
+  if (anchor === null) return indeterminate(file, "anchor_absent");
+  const opened = openTranscript(file);
+  if (opened === null) return indeterminate(file, "transcript_unreadable");
+  const { fd, stat } = opened;
+  try {
+    if (stat.dev !== anchor.device || stat.ino !== anchor.inode) {
+      return indeterminate(file, "transcript_replaced");
+    }
+    if (stat.size < anchor.capturedSize || stat.size < anchor.afterOffset) {
+      return indeterminate(file, "transcript_rewritten");
+    }
+    if (!anchor.newlineTerminated && stat.size > anchor.capturedSize) {
+      return indeterminate(file, "anchor_mismatch");
+    }
+    const snapshotLength = anchor.capturedSize - anchor.lineStart;
+    if (snapshotLength > MAX_TRANSCRIPT_CAPTURE_BYTES) {
+      return indeterminate(file, "anchor_mismatch");
+    }
+    const snapshot = readExact(fd, anchor.lineStart, snapshotLength);
+    if (snapshot === null) {
+      return indeterminate(file, "transcript_unreadable");
+    }
+    if (digest(snapshot) !== anchor.snapshotDigest) {
+      return indeterminate(file, "transcript_rewritten");
+    }
+    const anchorLength = anchor.lineEnd - anchor.lineStart;
+    const anchorRecord = parseRecord(snapshot.subarray(0, anchorLength));
+    if (anchorRecord?.uuid !== anchor.uuid) {
+      return indeterminate(file, "anchor_mismatch");
+    }
+    const tailLength = stat.size - anchor.afterOffset;
+    if (tailLength > MAX_TRANSCRIPT_TAIL_BYTES) {
+      return indeterminate(file, "tail_too_large");
+    }
+    const tailBytes = readExact(fd, anchor.afterOffset, tailLength);
+    if (tailBytes === null) return indeterminate(file, "transcript_unreadable");
+    const tail = parseJsonl(tailBytes);
+    if (tail === null) return indeterminate(file, "malformed_tail");
+    const byUuid = /* @__PURE__ */ new Map();
+    for (const record of tail) {
+      if (typeof record.uuid !== "string") continue;
+      if (typeof record.type !== "string" || !CLAUDE_CHAIN_TYPES.has(record.type)) {
+        return indeterminate(file, "unknown_chain_record");
+      }
+      if (byUuid.has(record.uuid)) return indeterminate(file, "malformed_tail");
+      byUuid.set(record.uuid, record);
+    }
+    let terminalIndex = -1;
+    for (let index = tail.length - 1; index >= 0; index--) {
+      const candidate = tail[index];
+      if (candidate?.type === "assistant" && candidate.isApiErrorMessage === true && typeof candidate.uuid === "string") {
+        terminalIndex = index;
+        break;
+      }
+    }
+    if (terminalIndex < 0) {
+      return indeterminate(file, "missing_terminal_api_error");
+    }
+    const terminal = tail[terminalIndex];
+    if (terminal.isSidechain === true) {
+      return indeterminate(file, "sidechain_api_error");
+    }
+    const ancestryFailure = descendsFromAnchor(terminal, anchor, byUuid);
+    if (ancestryFailure !== null) return indeterminate(file, ancestryFailure);
+    for (const later of tail.slice(terminalIndex + 1)) {
+      if (substantiveAssistant(later)) {
+        return indeterminate(file, "later_substantive_assistant");
+      }
+      if (later.type === "user") {
+        return indeterminate(file, "later_conversation_record");
+      }
+    }
+    const text = assistantText2(terminal);
+    return {
+      kind: "api_error",
+      evidenceSource: "claude_transcript_tail",
+      transcriptPath: file,
+      terminalRecordUuid: terminal.uuid,
+      ...text === void 0 ? {} : { lastAssistantMessage: text }
+    };
+  } finally {
+    (0, import_node_fs11.closeSync)(fd);
+  }
 }
 
 // src/commands/context.ts
@@ -1422,12 +1813,31 @@ async function confirmSubmission(ctx, tmuxName, eventFile, beforeLine, opts) {
 }
 
 // src/commands/wait-for-turn.ts
-var import_node_fs10 = require("fs");
+var import_node_fs12 = require("fs");
 var sleep5 = (ms) => new Promise((r) => setTimeout(r, ms));
 var isTurnEnd = (line) => {
   const e = parseEvent(line)?.event;
-  return e === "stop" || e === "session_end";
+  return e === "stop" || e === "stop_failure" || e === "session_end";
 };
+function formatStopFailure(worker, sid, event, eventFile) {
+  const lines = [
+    "Error: Claude turn failed",
+    `worker: ${worker}`,
+    `session_id: ${sid}`,
+    `error: ${event.error}`
+  ];
+  if (event.error_details !== void 0) {
+    lines.push(`error_details: ${event.error_details}`);
+  }
+  if (event.last_assistant_message !== void 0) {
+    lines.push(`last_assistant_message: ${event.last_assistant_message}`);
+  }
+  if (event.transcript_path !== void 0) {
+    lines.push(`transcript: ${event.transcript_path}`);
+  }
+  lines.push(`events: ${eventFile}`, "worker remains reusable");
+  return lines.join("\n");
+}
 async function cmdWaitForTurn(ctx, worker, opts) {
   const timeout = opts.timeout ?? 60;
   const pollMs = opts.pollMs ?? 500;
@@ -1435,13 +1845,24 @@ async function cmdWaitForTurn(ctx, worker, opts) {
   if (sid === null) {
     return { stderr: `Error: no worker known as '${worker}'`, code: 1 };
   }
+  const workerName = readMeta(ctx.workerDir, sid)?.tmux_name ?? worker;
   const eventFile = eventsPath(ctx.workerDir, sid);
   const deadline = Date.now() + timeout * 1e3;
-  while (!(0, import_node_fs10.existsSync)(eventFile)) {
+  while (!(0, import_node_fs12.existsSync)(eventFile)) {
     if (Date.now() >= deadline) {
       return {
-        stderr: `Timeout waiting for event file: ${eventFile}`,
-        code: 1
+        stderr: [
+          `Timeout waiting for event file: ${eventFile}`,
+          `worker: ${workerName}`,
+          `session_id: ${sid}`,
+          `retry_after_line: ${opts.afterLine ?? 0}`,
+          `retry: wait-for-turn --after-line ${opts.afterLine ?? 0}`,
+          "worker remains reusable"
+        ].join("\n"),
+        code: 124,
+        afterLine: opts.afterLine ?? 0,
+        eventFile,
+        sid
       };
     }
     await sleep5(pollMs);
@@ -1452,22 +1873,53 @@ async function cmdWaitForTurn(ctx, worker, opts) {
     if (lines.length > linesChecked) {
       const match = lines.slice(linesChecked).find(isTurnEnd);
       if (match !== void 0) {
-        return { stdout: match, code: 0 };
+        const terminal = parseEvent(match);
+        if (terminal?.event === "stop_failure") {
+          return {
+            stderr: formatStopFailure(workerName, sid, terminal, eventFile),
+            code: 3,
+            terminal,
+            afterLine: linesChecked,
+            eventFile,
+            sid
+          };
+        }
+        if (terminal !== null) {
+          return {
+            stdout: match,
+            code: 0,
+            terminal,
+            afterLine: linesChecked,
+            eventFile,
+            sid
+          };
+        }
       }
       linesChecked = lines.length;
     }
     await sleep5(pollMs);
   }
   return {
-    stderr: `Timeout waiting for turn (stop or session_end) after ${timeout}s`,
-    code: 1
+    stderr: [
+      `Timeout waiting for turn (stop, stop_failure, or session_end) after ${timeout}s`,
+      `worker: ${workerName}`,
+      `session_id: ${sid}`,
+      `events: ${eventFile}`,
+      `retry_after_line: ${linesChecked}`,
+      `retry: wait-for-turn --after-line ${linesChecked}`,
+      "worker remains reusable"
+    ].join("\n"),
+    code: 124,
+    afterLine: linesChecked,
+    eventFile,
+    sid
   };
 }
 
 // src/commands/converse.ts
 var sleep6 = (ms) => new Promise((r) => setTimeout(r, ms));
 function readTranscript(file) {
-  return (0, import_node_fs11.existsSync)(file) ? (0, import_node_fs11.readFileSync)(file, "utf8") : "";
+  return (0, import_node_fs13.existsSync)(file) ? (0, import_node_fs13.readFileSync)(file, "utf8") : "";
 }
 async function cmdConverse(ctx, worker, prompt, opts) {
   const timeout = opts.timeout ?? 120;
@@ -1476,6 +1928,7 @@ async function cmdConverse(ctx, worker, prompt, opts) {
   const now = opts.now ?? (() => (/* @__PURE__ */ new Date()).toISOString());
   const deriveFirst = isDeriveFirst(ctx, worker);
   let afterLine = 0;
+  let transcriptAnchor = null;
   if (!deriveFirst) {
     const pre = resolveWorker(ctx, worker);
     if ("code" in pre) return pre;
@@ -1486,6 +1939,11 @@ async function cmdConverse(ctx, worker, prompt, opts) {
       };
     }
     afterLine = readRawLines(eventsPath(ctx.workerDir, pre.sid)).length;
+    if (ctx.driver.id === "claude") {
+      transcriptAnchor = captureClaudeTranscriptAnchor(
+        ctx.driver.transcriptPath(pre.sid, pre.meta.cwd, ctx.home)
+      );
+    }
   }
   const sendResult = await cmdSend(ctx, worker, prompt, opts.sendOpts ?? {});
   if (sendResult.code !== 0) return sendResult;
@@ -1524,11 +1982,57 @@ csd-diagnostic: ${diagDest}` : "";
     afterLine,
     pollMs: opts.waitPollMs
   });
-  if (waitResult.code !== 0) {
-    const diag2 = await dumpDiag("wait_for_turn_timeout");
+  if (waitResult.code === 3 && waitResult.terminal?.event === "stop_failure") {
     return {
-      stderr: `Error: Worker did not finish within ${timeout}s${diag2}`,
-      code: 1
+      stderr: formatStopFailure(
+        meta.tmux_name,
+        sid,
+        waitResult.terminal,
+        eventFile
+      ),
+      code: 3
+    };
+  }
+  if (waitResult.code !== 0) {
+    if (waitResult.code === 124 && ctx.driver.id === "claude") {
+      const fallback = inspectClaudeTerminalTail(logFile, transcriptAnchor);
+      if (fallback.kind === "api_error") {
+        const lines2 = [
+          "Error: Claude turn failed",
+          `worker: ${meta.tmux_name}`,
+          `session_id: ${sid}`,
+          "error: transcript_marked_api_error",
+          `evidence_source: ${fallback.evidenceSource}`,
+          `transcript: ${fallback.transcriptPath}`,
+          `terminal_record_uuid: ${fallback.terminalRecordUuid}`
+        ];
+        if (fallback.lastAssistantMessage !== void 0) {
+          lines2.push(
+            `last_assistant_message: ${fallback.lastAssistantMessage}`
+          );
+        }
+        lines2.push("worker remains reusable");
+        return { stderr: lines2.join("\n"), code: 3 };
+      }
+    }
+    const diag2 = await dumpDiag("wait_for_turn_timeout");
+    const lines = [
+      `Error: Worker did not finish within ${timeout}s`,
+      `worker: ${meta.tmux_name}`,
+      `session_id: ${sid}`,
+      `transcript: ${logFile}`,
+      `events: ${eventFile}`
+    ];
+    if (waitResult.code === 124 && waitResult.afterLine !== void 0) {
+      lines.push(
+        `retry_after_line: ${waitResult.afterLine}`,
+        `retry: ${shimPath(ctx.workerDir, meta.tmux_name)} wait-for-turn --after-line ${waitResult.afterLine}`
+      );
+    }
+    lines.push("worker remains reusable");
+    return {
+      stderr: lines.join("\n") + diag2,
+      code: waitResult.code === 124 ? 124 : waitResult.code
     };
   }
   for (let i = 0; i < postPollCount; i++) {
@@ -1594,6 +2098,45 @@ async function cmdGrantConsent(ctx, opts) {
   };
 }
 
+// src/commands/grant-workspace-trust.ts
+async function cmdGrantWorkspaceTrust(ctx, cwd, opts) {
+  const resolved = resolveCwd(cwd);
+  if (typeof resolved !== "string") return resolved;
+  const canonicalCwd = resolved;
+  if (hasWorkspaceTrustGrant(ctx.home, canonicalCwd)) {
+    return {
+      stdout: `Workspace trust already granted for: ${canonicalCwd}`,
+      code: 0
+    };
+  }
+  if (!opts.isInteractive) {
+    return {
+      stderr: "Error: grant-workspace-trust requires an interactive terminal so the user can confirm the canonical path.",
+      code: 1
+    };
+  }
+  opts.warn?.(
+    [
+      "Claude may ask whether to trust this workspace before loading project-controlled instructions, hooks, or settings.",
+      "CSD will press Enter only when that prompt appears for this exact canonical path:",
+      canonicalCwd,
+      "This command writes only CSD state and never edits ~/.claude.json; after CSD accepts a future prompt, Claude Code controls its own trust persistence."
+    ].join("\n")
+  );
+  const confirmation = await opts.confirm();
+  if (confirmation !== canonicalCwd) {
+    return {
+      stderr: `Workspace trust not granted. Type the exact canonical path: ${canonicalCwd}`,
+      code: 1
+    };
+  }
+  grantWorkspaceTrust(ctx.home, canonicalCwd);
+  return {
+    stdout: `Workspace trust granted for: ${canonicalCwd}`,
+    code: 0
+  };
+}
+
 // src/commands/handoff.ts
 async function cmdHandoff(ctx, worker) {
   const resolved = resolveWorker(ctx, worker);
@@ -1614,13 +2157,13 @@ the session.
 }
 
 // src/commands/status.ts
-var import_node_fs12 = require("fs");
+var import_node_fs14 = require("fs");
 async function computeStatus(ctx, meta) {
   if (!await ctx.tmux.hasSession(meta.tmux_name)) {
     return "gone";
   }
   const ef = eventsPath(ctx.workerDir, meta.session_id);
-  if (!(0, import_node_fs12.existsSync)(ef)) {
+  if (!(0, import_node_fs14.existsSync)(ef)) {
     return "unknown";
   }
   const last = lastEvent(ef);
@@ -1712,7 +2255,7 @@ async function cmdPrune(ctx) {
 }
 
 // src/commands/read-events.ts
-var import_node_fs13 = require("fs");
+var import_node_fs15 = require("fs");
 function filterByType(lines, type) {
   return lines.filter((line) => parseEvent(line)?.event === type);
 }
@@ -1731,7 +2274,7 @@ async function cmdReadEvents(ctx, worker, opts) {
     return { stderr: `Error: no worker known as '${worker}'`, code: 1 };
   }
   const eventFile = eventsPath(ctx.workerDir, sid);
-  if (!(0, import_node_fs13.existsSync)(eventFile)) {
+  if (!(0, import_node_fs15.existsSync)(eventFile)) {
     return { stderr: `Error: No event file for session ${sid}`, code: 1 };
   }
   let lines = readRawLines(eventFile);
@@ -1750,7 +2293,7 @@ async function followEvents(ctx, worker, opts, sink, signal) {
   const eventFile = eventsPath(ctx.workerDir, sid);
   const matches = (line) => opts.type === void 0 || parseEvent(line)?.event === opts.type;
   let emitted = 0;
-  if ((0, import_node_fs13.existsSync)(eventFile)) {
+  if ((0, import_node_fs15.existsSync)(eventFile)) {
     const lines = readRawLines(eventFile);
     let backlog = lines.filter(matches);
     if (opts.last !== void 0) {
@@ -1761,7 +2304,7 @@ async function followEvents(ctx, worker, opts, sink, signal) {
   }
   for (; ; ) {
     if (signal?.aborted) return;
-    if ((0, import_node_fs13.existsSync)(eventFile)) {
+    if ((0, import_node_fs15.existsSync)(eventFile)) {
       const lines = readRawLines(eventFile);
       for (const line of lines.slice(emitted)) {
         if (matches(line)) sink(line);
@@ -1773,7 +2316,7 @@ async function followEvents(ctx, worker, opts, sink, signal) {
 }
 
 // src/commands/read-turn.ts
-var import_node_fs14 = require("fs");
+var import_node_fs16 = require("fs");
 async function cmdReadTurn(ctx, worker, opts) {
   const resolved = resolveWorker(ctx, worker);
   if ("code" in resolved) return resolved;
@@ -1785,10 +2328,10 @@ async function cmdReadTurn(ctx, worker, opts) {
     };
   }
   const logFile = ctx.driver.transcriptPath(sid, meta.cwd, ctx.home);
-  if (!(0, import_node_fs14.existsSync)(logFile)) {
+  if (!(0, import_node_fs16.existsSync)(logFile)) {
     return { stderr: `Error: Session log not found at ${logFile}`, code: 1 };
   }
-  const turn = ctx.driver.parseTurn((0, import_node_fs14.readFileSync)(logFile, "utf8"));
+  const turn = ctx.driver.parseTurn((0, import_node_fs16.readFileSync)(logFile, "utf8"));
   if (turn.length === 0) {
     return { stderr: "No user prompt found in session log", code: 1 };
   }
@@ -1939,6 +2482,7 @@ var TOP_LEVEL_SUBS = [
   "list",
   "prune",
   "grant-consent",
+  "grant-workspace-trust",
   "help"
 ];
 var PER_WORKER_SUBS = [
@@ -1983,6 +2527,9 @@ Top-level subcommands:
                        session dead); live workers are untouched
   grant-consent        One-time consent for running workers with permissions
                        bypassed (--dangerously-skip-permissions et al.)
+  grant-workspace-trust <cwd>
+                       Interactively grant CSD permission to accept Claude's
+                       workspace-trust prompt for one canonical directory
   help                 Show this message
 
 Per-worker subcommands (require --worker, supplied by the shim):
@@ -1991,10 +2538,12 @@ Per-worker subcommands (require --worker, supplied by the shim):
                        --with-turn returns the full markdown turn instead
   send <prompt>        Send a prompt without waiting for the turn
   wait-for-turn [timeout=60] [--after-line N]
-                       Block until the next stop OR session_end. By default the
-                       baseline is the events file's current end, so it waits for
-                       a NEW turn-end; pass --after-line N to wait for the first
-                       turn-end after line N (a baseline you captured earlier)
+                       Block until the next stop, stop_failure, OR session_end.
+                       By default the baseline is the events file's current end,
+                       so it waits for a NEW turn-end; pass --after-line N to wait
+                       for the first turn-end after line N (a baseline captured
+                       earlier). Exit 124 prints retry_after_line: N; reuse that
+                       N with --after-line so a late terminal event stays visible
   status               idle | working | terminated | gone | unknown
   read-events [--last N] [--type T] [--follow]
                        Read the event JSONL stream. With --follow, --last N caps
@@ -2006,6 +2555,14 @@ Per-worker subcommands (require --worker, supplied by the shim):
   handoff              Print tmux-attach instructions for a human
   session-id           Print the worker's session id
   events-file          Print the absolute path to the events JSONL
+
+Exit codes:
+  0   Success
+  1   Operational error
+  2   CLI usage error
+  3   Proven API-error turn
+  4   Reserved for interruption
+  124 Wait budget expired without terminal evidence
 
 Environment variables:
   CSD_CLAUDE_BIN / CSD_CODEX_BIN / CSD_PI_BIN
@@ -2031,8 +2588,8 @@ Environment variables:
   HOME                 Used to locate ~/.claude/projects/<encoded-cwd>/<sid>.jsonl and
                        the one-time consent file (~/.claude/.claude-session-driver-consent).
 `;
-function err(message, code = 2) {
-  return { message, code };
+function err(message2, code = 2) {
+  return { message: message2, code };
 }
 function parseWorker(argv) {
   let worker;
@@ -2073,9 +2630,9 @@ function buildContext(worker) {
   };
 }
 function bootstrapOpts() {
-  const csdEntry = (0, import_node_path8.join)(__dirname, "csd.cjs");
+  const csdEntry = (0, import_node_path9.join)(__dirname, "csd.cjs");
   return {
-    pluginDir: process.env.CLAUDE_PLUGIN_ROOT ?? (0, import_node_path8.resolve)(__dirname, ".."),
+    pluginDir: process.env.CLAUDE_PLUGIN_ROOT ?? (0, import_node_path9.resolve)(__dirname, ".."),
     csdEntry,
     csdPath: process.env.CSD_PATH ?? csdEntry
   };
@@ -2086,6 +2643,17 @@ function readLine(input = process.stdin) {
     let captured = null;
     rl.once("line", (line) => {
       captured = line.trim();
+      rl.close();
+    });
+    rl.once("close", () => res(captured ?? ""));
+  });
+}
+function readExactLine(input = process.stdin) {
+  return new Promise((res) => {
+    const rl = (0, import_node_readline.createInterface)({ input });
+    let captured = null;
+    rl.once("line", (line) => {
+      captured = line;
       rl.close();
     });
     rl.once("close", () => res(captured ?? ""));
@@ -2200,6 +2768,22 @@ async function run2(argv, io = realIo) {
           confirm: () => grantConsentConfirm(io)
         })
       );
+    case "grant-workspace-trust": {
+      const [cwd, ...extra] = args;
+      if (cwd === void 0 || extra.length > 0) {
+        io.err("Usage: grant-workspace-trust <cwd>\n");
+        return 2;
+      }
+      return emit(
+        io,
+        await cmdGrantWorkspaceTrust(ctx, cwd, {
+          isInteractive: process.stdin.isTTY === true,
+          warn: (text) => io.out(`${text}
+`),
+          confirm: () => grantWorkspaceTrustConfirm(io)
+        })
+      );
+    }
     case "launch": {
       const parsedArgs = parseLaunchArgs(args);
       if ("code" in parsedArgs) {
@@ -2239,7 +2823,7 @@ async function run2(argv, io = realIo) {
       const prompt = args[i];
       if (prompt === void 0 || prompt.trim() === "") {
         io.err("Usage: converse [--with-turn] <prompt> [timeout=120]\n");
-        return 1;
+        return 2;
       }
       let timeout = 120;
       if (args[i + 1] !== void 0) {
@@ -2255,7 +2839,7 @@ async function run2(argv, io = realIo) {
       const prompt = args[0];
       if (prompt === void 0 || prompt.trim() === "") {
         io.err("Usage: send <prompt-text>\n");
-        return 1;
+        return 2;
       }
       return emit(io, await cmdSend(ctx, w, prompt));
     }
@@ -2402,6 +2986,10 @@ async function grantConsentConfirm(io, input = process.stdin) {
   const reply = await readLine(input);
   return reply === "yes";
 }
+async function grantWorkspaceTrustConfirm(io, input = process.stdin) {
+  io.out("Type the exact canonical path shown above to confirm:\n");
+  return readExactLine(input);
+}
 if (typeof require !== "undefined" && typeof module !== "undefined" && require.main === module) {
   run2(process.argv.slice(2)).then((c) => process.exit(c)).catch((e) => {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}
@@ -2413,6 +3001,8 @@ if (typeof require !== "undefined" && typeof module !== "undefined" && require.m
 0 && (module.exports = {
   followStream,
   grantConsentConfirm,
+  grantWorkspaceTrustConfirm,
+  readExactLine,
   readLine,
   run
 });

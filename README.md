@@ -8,7 +8,7 @@ A single coding-agent session works on one task at a time. With this plugin, a c
 
 ## How It Works
 
-Workers run with permissions bypassed and execute tool calls without prompting. Each worker writes lifecycle events to a JSONL file — session start, prompt submitted, each tool call (with name and input), stop, and session end — so a controller can watch what each worker is doing. The events are observation-only; the plugin does not gate tool calls.
+Workers run with permissions bypassed and execute tool calls without prompting. Each worker writes lifecycle events to a JSONL file — session start, prompt submitted, each tool call (with name and input), stop, API failure, and session end — so a controller can watch what each worker is doing. The events are observation-only; the plugin does not gate tool calls.
 
 The controller drives three harnesses through one CLI (`csd`), chosen at launch with `--harness <claude|codex|pi>` (default `claude`):
 
@@ -55,6 +55,7 @@ All operations go through a single binary at `skills/driving-claude-code-session
 | `csd adopt <name> <cwd> <session-id> [-- claude-args...]` | Re-adopt an existing Claude session as a worker (claude-only) |
 | `csd list [--all]` | List active (or all) workers |
 | `csd grant-consent` | One-time consent flow (required before first launch) |
+| `csd grant-workspace-trust <cwd>` | Interactively allow CSD to accept Claude's workspace trust prompt for one canonical directory |
 
 `csd launch` prints the shim path to stdout (deterministic at `/tmp/csd-workers/bin/<name>`) and a human-readable panel to stderr. Capture it:
 
@@ -64,15 +65,46 @@ WORKER=$(csd launch my-worker /path/to/project)
 
 The worker dir defaults to `/tmp/csd-workers` (renamed from `/tmp/claude-workers`; a back-compat symlink `/tmp/claude-workers → /tmp/csd-workers` is created when the default is in use). Override it with `CSD_WORKER_DIR`.
 
+### Claude workspace trust
+
+If Claude opens its workspace trust dialog, CSD accepts it only when that exact
+canonical directory has a CSD-owned grant. Create one from an interactive
+terminal:
+
+```bash
+csd grant-workspace-trust /path/to/project
+```
+
+The command resolves the directory with `realpath`, shows the canonical result,
+and requires you to type that complete path exactly. It stores an owner-only,
+hashed per-workspace record under `~/.claude/.claude-session-driver/`; it does
+not directly edit Claude's `~/.claude.json`. This grant authorizes only CSD's
+single Enter on a recognized workspace prompt; it is not Claude's trust record.
+
+For a non-home directory, once CSD accepts the prompt, Claude records its own
+native trust for that canonical path. That native record is independent: later
+removing the CSD grant or changing repository contents does not revoke it. For
+the home directory, Claude intentionally does not persist native trust and asks
+again on every launch, so a home grant lets CSD confirm each new prompt.
+
+CSD recognizes the prompt only when the same pane contains `Yes, I trust this
+folder` and either `No, exit` or `No, continue without these permissions`.
+Anything else fails closed: CSD sends no Enter and eventually reports the
+visible pane on timeout. Smoke-test this detector after Claude Code upgrades
+that may change startup UI wording. Without a grant, `launch` removes its new
+worker; a failed `adopt` rolls back only state created by that attempt and
+preserves inherited tmux, events, shim, and metadata. A workspace grant never
+authorizes separate prompts such as external `CLAUDE.md` imports.
+
 ### Per-worker subcommands
 
 Once you have a shim path, invoke it directly or use `csd --worker <name> <sub>`:
 
 | Subcommand | Purpose |
 |------------|---------|
-| `$WORKER converse [--with-turn] <prompt> [timeout]` | Send a prompt, wait, return the response |
+| `$WORKER converse [--with-turn] <prompt> [timeout]` | Send a prompt, wait, and return the response or a visible terminal outcome |
 | `$WORKER send <prompt>` | Send a prompt without waiting |
-| `$WORKER wait-for-turn [timeout]` | Block until the worker finishes a turn |
+| `$WORKER wait-for-turn [timeout]` | Block until `stop`, `stop_failure`, or `session_end` |
 | `$WORKER read-turn [--full]` | Format the last turn as markdown |
 | `$WORKER read-events [--last N] [--type T] [--follow]` | Read and filter the event stream |
 | `$WORKER status` | Print worker status (idle/working/terminated/gone) |
@@ -80,6 +112,38 @@ Once you have a shim path, invoke it directly or use `csd --worker <name> <sub>`
 | `$WORKER handoff` | Print tmux attach instructions for a human takeover |
 | `$WORKER session-id` | Print the worker's session id |
 | `$WORKER events-file` | Print the path to the JSONL event file |
+
+### Terminal outcomes
+
+Successful waits return exit 0. A Claude Code `StopFailure` is recorded as a
+structured `stop_failure` event; `wait-for-turn` and `converse` return exit 3
+and write the provider error evidence to stderr instead of presenting it as a
+successful assistant response. If the caller's wait budget expires without
+terminal evidence, they return exit 124 with the worker name, session ID, and
+event path; `converse` also prints the transcript path.
+
+For Claude `converse`, a missing `StopFailure` hook gets one bounded fallback.
+Before sending, CSD finds the last complete UUID-bearing record inside a fixed
+1 MiB capture window and retains its byte offsets and snapshot identity. On
+timeout it revalidates that anchor without reading earlier bytes, then reads at
+most 1 MiB after it. Exit 3 requires a non-sidechain API-error assistant whose
+`parentUuid` ancestry reaches the anchor. An absent or mismatched anchor,
+rewrite/truncation, oversized or malformed tail, orphan/sidechain error, unknown
+UUID-bearing chain type, later substantive assistant output, or unmarked tail
+remains exit 124. The fallback never treats transcript shape as proof of normal
+completion.
+
+When `wait-for-turn` exits 124, stderr includes `retry_after_line: N`. Retry
+with `$WORKER wait-for-turn --after-line N` to keep a terminal event that arrives
+after the first timeout visible; a bare retry would baseline at the new end of
+the event file. `converse` exit 124 prints the same cursor plus the complete shim
+command. Check `status` first, then use that exact command when the turn is still
+working or when you need to consume a terminal event that landed after timeout.
+
+Exit 3 and exit 124 leave the tmux worker alive and reusable. CSD does not retry
+automatically. This release keeps the existing daemonless status vocabulary and
+tabular `list` output; it does not add turn IDs, controller claims/correlation,
+interruption classification, a journal, or a daemon.
 
 ### Environment variables
 

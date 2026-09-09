@@ -81,6 +81,32 @@ describe('cmdWaitForTurn', () => {
     );
   });
 
+  it('returns code 3 and provider evidence for stop_failure', async () => {
+    const ef = eventsPath(workerDir, SID);
+    appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
+    appendEvent(ef, {
+      event: 'stop_failure',
+      ts: '2025-01-01T00:00:01Z',
+      prompt_id: 'prompt-1',
+      transcript_path: '/tmp/transcript.jsonl',
+      error: 'model_not_found',
+      error_details: 'unknown model fixture-model',
+      last_assistant_message: 'API Error: Model not found',
+    });
+    const result = await cmdWaitForTurn(makeCtx(workerDir), SID, {
+      timeout: 5,
+      pollMs: 10,
+      afterLine: 1,
+    });
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain('model_not_found');
+    expect(result.stderr).toContain('unknown model fixture-model');
+    expect(result.stderr).toContain('API Error: Model not found');
+    expect(result.stderr).toContain('wft-worker');
+    expect(result.stderr).toContain(SID);
+    expect(result.terminal).toMatchObject({ event: 'stop_failure' });
+  });
+
   it('returns the FIRST stop/session_end after afterLine', async () => {
     const ef = eventsPath(workerDir, SID);
     appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
@@ -116,7 +142,7 @@ describe('cmdWaitForTurn', () => {
     expect(result.stdout).toBe('{"event":"stop","ts":"2025-01-01T00:00:01Z"}');
   });
 
-  it('times out with code 1 when no turn end appears', async () => {
+  it('times out with code 124 and leaves a reusable diagnostic cursor', async () => {
     const ef = eventsPath(workerDir, SID);
     appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
     appendEvent(ef, {
@@ -127,21 +153,40 @@ describe('cmdWaitForTurn', () => {
       timeout: 0.2,
       pollMs: 10,
     });
-    expect(result.code).toBe(1);
-    expect(result.stderr).toBe(
-      'Timeout waiting for turn (stop or session_end) after 0.2s',
+    expect(result.code).toBe(124);
+    expect(result.stderr).toContain(
+      'Timeout waiting for turn (stop, stop_failure, or session_end) after 0.2s',
     );
+    expect(result.stderr).toContain('wft-worker');
+    expect(result.stderr).toContain(SID);
+    expect(result.stderr).toContain(ef);
+    expect(result.stderr).toContain('retry_after_line: 2');
+    expect(result.afterLine).toBe(2);
+
+    // The timeout does not consume the cursor. A later terminal event remains
+    // readable by retrying from the returned baseline.
+    appendEvent(ef, { event: 'stop', ts: '2025-01-01T00:00:02Z' });
+    const later = await cmdWaitForTurn(makeCtx(workerDir), SID, {
+      timeout: 1,
+      pollMs: 10,
+      afterLine: result.afterLine,
+    });
+    expect(later.code).toBe(0);
+    expect(later.stdout).toContain('"event":"stop"');
   });
 
-  it('times out waiting for the event file when it never appears', async () => {
+  it('returns code 124 waiting for the event file when it never appears', async () => {
     const result = await cmdWaitForTurn(makeCtx(workerDir), SID, {
       timeout: 0.2,
       pollMs: 10,
     });
-    expect(result.code).toBe(1);
-    expect(result.stderr).toBe(
+    expect(result.code).toBe(124);
+    expect(result.stderr).toContain(
       `Timeout waiting for event file: ${eventsPath(workerDir, SID)}`,
     );
+    expect(result.stderr).toContain('wft-worker');
+    expect(result.stderr).toContain(SID);
+    expect(result.stderr).toContain('retry_after_line: 0');
   });
 
   it('returns code 1 for an unknown worker', async () => {

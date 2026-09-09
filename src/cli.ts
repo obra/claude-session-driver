@@ -6,6 +6,7 @@ import type { CommandContext, CommandResult } from './commands/context.js';
 import { cmdConverse } from './commands/converse.js';
 import { cmdEventsFile } from './commands/events-file.js';
 import { cmdGrantConsent } from './commands/grant-consent.js';
+import { cmdGrantWorkspaceTrust } from './commands/grant-workspace-trust.js';
 import { cmdHandoff } from './commands/handoff.js';
 import type { BootstrapOpts } from './commands/launch.js';
 import { cmdLaunch } from './commands/launch.js';
@@ -44,6 +45,7 @@ const TOP_LEVEL_SUBS = [
   'list',
   'prune',
   'grant-consent',
+  'grant-workspace-trust',
   'help',
 ];
 const PER_WORKER_SUBS = [
@@ -95,6 +97,9 @@ Top-level subcommands:
                        session dead); live workers are untouched
   grant-consent        One-time consent for running workers with permissions
                        bypassed (--dangerously-skip-permissions et al.)
+  grant-workspace-trust <cwd>
+                       Interactively grant CSD permission to accept Claude's
+                       workspace-trust prompt for one canonical directory
   help                 Show this message
 
 Per-worker subcommands (require --worker, supplied by the shim):
@@ -103,10 +108,12 @@ Per-worker subcommands (require --worker, supplied by the shim):
                        --with-turn returns the full markdown turn instead
   send <prompt>        Send a prompt without waiting for the turn
   wait-for-turn [timeout=60] [--after-line N]
-                       Block until the next stop OR session_end. By default the
-                       baseline is the events file's current end, so it waits for
-                       a NEW turn-end; pass --after-line N to wait for the first
-                       turn-end after line N (a baseline you captured earlier)
+                       Block until the next stop, stop_failure, OR session_end.
+                       By default the baseline is the events file's current end,
+                       so it waits for a NEW turn-end; pass --after-line N to wait
+                       for the first turn-end after line N (a baseline captured
+                       earlier). Exit 124 prints retry_after_line: N; reuse that
+                       N with --after-line so a late terminal event stays visible
   status               idle | working | terminated | gone | unknown
   read-events [--last N] [--type T] [--follow]
                        Read the event JSONL stream. With --follow, --last N caps
@@ -118,6 +125,14 @@ Per-worker subcommands (require --worker, supplied by the shim):
   handoff              Print tmux-attach instructions for a human
   session-id           Print the worker's session id
   events-file          Print the absolute path to the events JSONL
+
+Exit codes:
+  0   Success
+  1   Operational error
+  2   CLI usage error
+  3   Proven API-error turn
+  4   Reserved for interruption
+  124 Wait budget expired without terminal evidence
 
 Environment variables:
   CSD_CLAUDE_BIN / CSD_CODEX_BIN / CSD_PI_BIN
@@ -259,6 +274,21 @@ export function readLine(
   });
 }
 
+/** Read the first line without trimming; workspace paths must match exactly. */
+export function readExactLine(
+  input: NodeJS.ReadableStream = process.stdin,
+): Promise<string> {
+  return new Promise((res) => {
+    const rl = createInterface({ input });
+    let captured: string | null = null;
+    rl.once('line', (line) => {
+      captured = line;
+      rl.close();
+    });
+    rl.once('close', () => res(captured ?? ''));
+  });
+}
+
 /** Parse `launch [--harness <id>] <tmux-name> <cwd> [-- harness-args...]`. */
 function parseLaunchArgs(
   argv: string[],
@@ -392,6 +422,22 @@ export async function run(argv: string[], io: Io = realIo): Promise<number> {
         }),
       );
 
+    case 'grant-workspace-trust': {
+      const [cwd, ...extra] = args;
+      if (cwd === undefined || extra.length > 0) {
+        io.err('Usage: grant-workspace-trust <cwd>\n');
+        return 2;
+      }
+      return emit(
+        io,
+        await cmdGrantWorkspaceTrust(ctx, cwd, {
+          isInteractive: process.stdin.isTTY === true,
+          warn: (text) => io.out(`${text}\n`),
+          confirm: () => grantWorkspaceTrustConfirm(io),
+        }),
+      );
+    }
+
     case 'launch': {
       const parsedArgs = parseLaunchArgs(args);
       if ('code' in parsedArgs) {
@@ -432,7 +478,7 @@ export async function run(argv: string[], io: Io = realIo): Promise<number> {
       const prompt = args[i];
       if (prompt === undefined || prompt.trim() === '') {
         io.err('Usage: converse [--with-turn] <prompt> [timeout=120]\n');
-        return 1;
+        return 2;
       }
       let timeout = 120;
       if (args[i + 1] !== undefined) {
@@ -449,7 +495,7 @@ export async function run(argv: string[], io: Io = realIo): Promise<number> {
       const prompt = args[0];
       if (prompt === undefined || prompt.trim() === '') {
         io.err('Usage: send <prompt-text>\n');
-        return 1;
+        return 2;
       }
       return emit(io, await cmdSend(ctx, w, prompt));
     }
@@ -645,6 +691,14 @@ export async function grantConsentConfirm(
   io.out("Type 'yes' to grant consent:\n");
   const reply = await readLine(input);
   return reply === 'yes';
+}
+
+export async function grantWorkspaceTrustConfirm(
+  io: Io,
+  input: NodeJS.ReadableStream = process.stdin,
+): Promise<string> {
+  io.out('Type the exact canonical path shown above to confirm:\n');
+  return readExactLine(input);
 }
 
 // Run the CLI only when executed as the bundled `node dist/csd.cjs`. In the

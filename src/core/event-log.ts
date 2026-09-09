@@ -72,6 +72,7 @@ export function classifyStatus(last: WorkerEvent): WorkerStatus {
     case 'post_tool_use':
       return 'working';
     case 'stop':
+    case 'stop_failure':
     case 'session_start':
       return 'idle';
     default: {

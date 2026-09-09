@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CommandContext } from '../src/commands/context.js';
 import { cmdConverse } from '../src/commands/converse.js';
+import { cmdWaitForTurn } from '../src/commands/wait-for-turn.js';
 import { appendEvent } from '../src/core/event-log.js';
 import { claudeTranscriptPath, eventsPath } from '../src/core/paths.js';
 import type { Tmux } from '../src/core/tmux.js';
@@ -29,6 +30,8 @@ const ASSISTANT_BEFORE =
 const USER_PROMPT = '{"type":"user","message":{"content":"do the thing"}}';
 const ASSISTANT_AFTER =
   '{"type":"assistant","message":{"content":[{"type":"text","text":"the fresh answer"}]}}';
+const UUID_ANCHOR =
+  '{"type":"assistant","uuid":"99999999-9999-4999-8999-999999999999","message":{"role":"assistant","content":[{"type":"text","text":"earlier reply"}]}}';
 
 function transcriptFile(home: string): string {
   return claudeTranscriptPath(home, CWD, SID);
@@ -190,6 +193,62 @@ describe('cmdConverse', () => {
     );
   });
 
+  it('returns code 3 with exact StopFailure evidence on stderr', async () => {
+    const ef = eventsPath(workerDir, SID);
+    writeTranscript(home, [ASSISTANT_BEFORE, USER_PROMPT].join('\n'));
+    let responded = false;
+    const tmux: Tmux = {
+      async hasSession() {
+        return true;
+      },
+      async killSession() {},
+      async capturePane() {
+        return '';
+      },
+      async capturePaneFull() {
+        return '';
+      },
+      async sendText() {},
+      async sendEnter() {
+        if (responded) return;
+        responded = true;
+        appendEvent(ef, {
+          event: 'user_prompt_submit',
+          ts: '2025-01-01T00:00:01Z',
+        });
+        appendEvent(ef, {
+          event: 'stop_failure',
+          ts: '2025-01-01T00:00:02Z',
+          prompt_id: 'prompt-1',
+          transcript_path: transcriptFile(home),
+          error: 'model_not_found',
+          error_details: 'unknown model fixture-model',
+          last_assistant_message: 'API Error: Model not found',
+        });
+      },
+      async sendKey() {},
+      async newSession() {},
+      async respawnPane() {},
+    };
+    const result = await cmdConverse(
+      makeCtx(workerDir, home, tmux),
+      SID,
+      'hi',
+      fastOpts,
+    );
+    expect(result.code).toBe(3);
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toContain(`worker: ${TMUX_NAME}`);
+    expect(result.stderr).toContain(`session_id: ${SID}`);
+    expect(result.stderr).toContain('error: model_not_found');
+    expect(result.stderr).toContain(
+      'error_details: unknown model fixture-model',
+    );
+    expect(result.stderr).toContain(
+      'last_assistant_message: API Error: Model not found',
+    );
+  });
+
   it('errors and writes a diag file when the turn times out', async () => {
     writeTranscript(home, [ASSISTANT_BEFORE, USER_PROMPT].join('\n'));
     const ef = eventsPath(workerDir, SID);
@@ -226,12 +285,132 @@ describe('cmdConverse', () => {
       now: () => '2026-06-13T00:00:00Z',
       diagRun: async () => ({ stdout: 'PS\n', stderr: '', code: 0 }),
     });
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(124);
     expect(result.stderr).toContain('Error: Worker did not finish within 0.1s');
+    expect(result.stderr).toContain(`worker: ${TMUX_NAME}`);
+    expect(result.stderr).toContain(`session_id: ${SID}`);
+    expect(result.stderr).toContain(`transcript: ${transcriptFile(home)}`);
+    expect(result.stderr).toContain(`events: ${ef}`);
+    const cursorMatch = result.stderr?.match(/retry_after_line: (\d+)/);
+    expect(cursorMatch).not.toBeNull();
+    const cursor = Number(cursorMatch?.[1]);
+    expect(result.stderr).toContain(
+      `retry: ${join(workerDir, 'bin', TMUX_NAME)} wait-for-turn --after-line ${cursor}`,
+    );
+    expect(result.stderr).toContain('worker remains reusable');
     expect(result.stderr).toContain(`csd-diagnostic: ${diagFile}`);
     expect(readFileSync(diagFile, 'utf8')).toContain(
       'reason=wait_for_turn_timeout',
     );
+
+    // A terminal event that lands after converse's timeout remains observable
+    // through the public retry cursor printed above. A bare wait would baseline
+    // after this event and miss it.
+    appendEvent(ef, { event: 'stop', ts: '2025-01-01T00:00:02Z' });
+    const retry = await cmdWaitForTurn(ctx, SID, {
+      timeout: 1,
+      pollMs: 5,
+      afterLine: cursor,
+    });
+    expect(retry.code).toBe(0);
+    expect(retry.stdout).toContain('"event":"stop"');
+  });
+
+  it('uses one bounded Claude transcript fallback after event timeout', async () => {
+    writeTranscript(home, `${UUID_ANCHOR}\n`);
+    const ef = eventsPath(workerDir, SID);
+    let responded = false;
+    const tmux: Tmux = {
+      async hasSession() {
+        return true;
+      },
+      async killSession() {},
+      async capturePane() {
+        return '';
+      },
+      async capturePaneFull() {
+        return '';
+      },
+      async sendText() {},
+      async sendEnter() {
+        if (responded) return;
+        responded = true;
+        appendEvent(ef, {
+          event: 'user_prompt_submit',
+          ts: '2025-01-01T00:00:01Z',
+        });
+        writeTranscript(
+          home,
+          `${[
+            UUID_ANCHOR,
+            '{"type":"user","uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","parentUuid":"99999999-9999-4999-8999-999999999999","message":{"role":"user","content":"hi"}}',
+            '{"type":"assistant","uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","parentUuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","isApiErrorMessage":true,"message":{"role":"assistant","content":[{"type":"text","text":"API Error: transcript fallback fixture"}]}}',
+            '{"type":"system","uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","parentUuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","subtype":"turn_duration"}',
+          ].join('\n')}\n`,
+        );
+      },
+      async sendKey() {},
+      async newSession() {},
+      async respawnPane() {},
+    };
+    const result = await cmdConverse(
+      makeCtx(workerDir, home, tmux),
+      SID,
+      'hi',
+      { ...fastOpts, timeout: 0.1 },
+    );
+    expect(result.code).toBe(3);
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toContain('evidence_source: claude_transcript_tail');
+    expect(result.stderr).toContain(`transcript: ${transcriptFile(home)}`);
+    expect(result.stderr).toContain(
+      'terminal_record_uuid: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    );
+    expect(result.stderr).toContain(
+      'last_assistant_message: API Error: transcript fallback fixture',
+    );
+  });
+
+  it('does not claim transcript failure when no pre-send anchor exists', async () => {
+    writeTranscript(home, '{"type":"last-prompt","leafUuid":null}');
+    const ef = eventsPath(workerDir, SID);
+    let responded = false;
+    const tmux: Tmux = {
+      async hasSession() {
+        return true;
+      },
+      async killSession() {},
+      async capturePane() {
+        return '';
+      },
+      async capturePaneFull() {
+        return '';
+      },
+      async sendText() {},
+      async sendEnter() {
+        if (responded) return;
+        responded = true;
+        appendEvent(ef, {
+          event: 'user_prompt_submit',
+          ts: '2025-01-01T00:00:01Z',
+        });
+        writeTranscript(
+          home,
+          '{"type":"assistant","uuid":"new-error","isApiErrorMessage":true,"message":{"role":"assistant","content":[{"type":"text","text":"must not be attributed"}]}}',
+        );
+      },
+      async sendKey() {},
+      async newSession() {},
+      async respawnPane() {},
+    };
+    const result = await cmdConverse(
+      makeCtx(workerDir, home, tmux),
+      SID,
+      'hi',
+      { ...fastOpts, timeout: 0.1 },
+    );
+    expect(result.code).toBe(124);
+    expect(result.stderr).not.toContain('evidence_source');
   });
 
   it('errors and writes a diag when no new assistant text appears', async () => {

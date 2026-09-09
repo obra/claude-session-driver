@@ -2,14 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { hasConsent } from '../core/consent.js';
+import { renderCsdCommand } from '../core/csd-command.js';
+import { readRawLines } from '../core/event-log.js';
 import {
   ensureBackCompatSymlink,
   eventsPath,
   workerHomePath,
 } from '../core/paths.js';
-import { shellQuote } from '../core/shell.js';
 import { isoSecondsUtc } from '../core/time.js';
 import {
+  removeWorker,
   resolveSession,
   writeHarnessMarker,
   writeMeta,
@@ -31,7 +33,6 @@ export interface BootstrapOpts {
   /** The csd command path used in the reproduce line + consent message. */
   csdPath: string;
   /** awaitSessionStart timing overrides (tests pass tiny values). */
-  trustTimeoutMs?: number;
   startTimeoutMs?: number;
   pollMs?: number;
   /**
@@ -63,7 +64,7 @@ export interface LaunchArgs {
 /** The one-time-consent error, matching the bash text. */
 export function consentError(csdPath: string): CommandResult {
   return {
-    stderr: `Error: claude-session-driver requires one-time consent before launching workers.\nRun: ${csdPath} grant-consent`,
+    stderr: `Error: claude-session-driver requires one-time consent before launching workers.\nRun: ${renderCsdCommand(csdPath, ['grant-consent'])}`,
     code: 1,
   };
 }
@@ -90,20 +91,17 @@ export function renderPanel(opts: {
   csdPath: string;
   invocation: string[];
 }): string {
-  const reproduceArgs = opts.invocation.map(shellQuote).join(' ');
-  // The default csd path is the bundle (`dist/csd.cjs`) — a plain file with no
-  // shebang and not +x, so a bare path isn't runnable. Prefix `node` for a JS
-  // entry; a non-JS CSD_PATH wrapper override is used as-is (RE-2).
-  const runnableCsd = /\.[cm]?js$/.test(opts.csdPath)
-    ? `node ${shellQuote(opts.csdPath)}`
-    : shellQuote(opts.csdPath);
+  const reproduce = renderCsdCommand(opts.csdPath, [
+    opts.verb,
+    ...opts.invocation,
+  ]);
   return [
     opts.header,
     `  tmux:       ${opts.tmuxName}`,
     `  session_id: ${opts.sessionId}`,
     `  cwd:        ${opts.cwd}`,
     `  events:     ${opts.eventsFile}`,
-    `  reproduce: ${runnableCsd} ${opts.verb} ${reproduceArgs}`,
+    `  reproduce: ${reproduce}`,
   ].join('\n');
 }
 
@@ -210,12 +208,29 @@ async function launchAssign(
     ...driver.launchArgv('launch', sessionId, cwd, opts.pluginDir, ctx.home),
     ...extraArgs,
   ];
+  // Capture the attempt boundary before tmux starts. The SessionStart hook can
+  // append synchronously during newSession, so taking this baseline afterward
+  // would race an extremely fast worker.
+  const eventLineBaseline = readRawLines(
+    eventsPath(ctx.workerDir, sessionId),
+  ).length;
   await ctx.tmux.newSession(tmuxName, cwd, env, argv);
 
   await driver.postLaunch(tmuxName);
 
-  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, opts);
+  const proof = await awaitSessionStart(ctx, tmuxName, sessionId, {
+    cwd,
+    csdPath: opts.csdPath,
+    afterLine: eventLineBaseline,
+    startTimeoutMs: opts.startTimeoutMs,
+    pollMs: opts.pollMs,
+  });
   if (!proof.started) {
+    try {
+      await ctx.tmux.killSession(tmuxName);
+    } finally {
+      removeWorker(ctx.workerDir, sessionId, tmuxName);
+    }
     return { stderr: proof.failureMessage, code: 1 };
   }
 

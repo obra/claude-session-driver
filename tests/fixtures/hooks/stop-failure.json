@@ -1,0 +1,10 @@
+{
+  "session_id": "fixture-session",
+  "prompt_id": "77777777-7777-4777-8777-777777777777",
+  "transcript_path": "/home/fixture/.claude/projects/example/transcript.jsonl",
+  "cwd": "/home/fixture/project",
+  "hook_event_name": "StopFailure",
+  "error": "rate_limit",
+  "error_details": "429 Too Many Requests",
+  "last_assistant_message": "API Error: Rate limit reached"
+}
