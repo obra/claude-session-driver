@@ -27,8 +27,12 @@ const DEFAULT_TRUST_SETTLE_MS = 300;
 const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const DEFAULT_READY_POLL_MS = 500;
 
-/** The codex composer glyph (U+203A SINGLE RIGHT-POINTING ANGLE QUOTATION MARK). */
-const COMPOSER_GLYPH = '›';
+/**
+ * The idle composer: the glyph (U+203A) followed by its placeholder. The glyph
+ * alone is not enough — codex's startup modals (model migration, rate-limit
+ * model nudge) use the same glyph as their selection cursor.
+ */
+const COMPOSER_READY = /›\s+Ask Codex/;
 
 /** Any of the trust-gate prompts codex shows for un-reviewed hooks. */
 const TRUST_GATE = /hooks need review|trust all and continue|trust all/i;
@@ -78,7 +82,8 @@ export async function dismissCodexTrustGate(
 }
 
 /**
- * Block until codex's composer is ready (its prompt glyph `›` is visible), or
+ * Block until codex's composer is ready (the idle composer line `› Ask Codex`
+ * is visible; the bare glyph also appears as a modal cursor), or
  * settle after the window. derive readiness has no hard signal — codex's
  * session_start fires at the first prompt, not at boot — so this is best-effort:
  * it returns success on timeout, and the first send re-confirms via the hook's
@@ -95,7 +100,7 @@ export async function awaitComposerReady(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const pane = await capture(ctx, tmuxName);
-    if (pane.includes(COMPOSER_GLYPH)) return;
+    if (COMPOSER_READY.test(pane)) return;
     await sleep(pollMs);
   }
 }

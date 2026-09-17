@@ -581,7 +581,6 @@ var CODEX_HOOK_EVENTS = [
   "Stop",
   "SessionEnd"
 ];
-var DEFAULT_MODEL = "gpt-5.5";
 function tomlBasicString(value) {
   let out = '"';
   for (const ch of value) {
@@ -630,10 +629,14 @@ function codexWorkerEnv(workerHome) {
 function buildCodexConfig(opts) {
   const { cwd, model, hookCommand } = opts;
   const lines = [
-    `model = ${tomlBasicString(model)}`,
+    ...model === void 0 ? [] : [`model = ${tomlBasicString(model)}`],
     // Hardcoded safe literal — no user input, no escaping needed (unlike `model`
     // and `cwd` which go through tomlBasicString because they come from the user).
     'model_reasoning_effort = "low"',
+    // Codex pops a "switch model?" picker after a turn when the account nears
+    // its rate limit; a modal eats the next pasted prompt, so hide it.
+    "[notice]",
+    "hide_rate_limit_model_nudge = true",
     `[projects.${tomlBasicString(cwd)}]`,
     'trust_level = "trusted"'
   ];
@@ -694,7 +697,7 @@ var codex = {
     ].join(" ");
     const config = buildCodexConfig({
       cwd,
-      model: process.env.CSD_CODEX_MODEL ?? DEFAULT_MODEL,
+      model: process.env.CSD_CODEX_MODEL,
       hookCommand
     });
     (0, import_node_fs4.writeFileSync)((0, import_node_path3.join)(workerHome, "config.toml"), config);
@@ -948,7 +951,7 @@ var DEFAULT_TRUST_POLL_MS = 250;
 var DEFAULT_TRUST_SETTLE_MS = 300;
 var DEFAULT_READY_TIMEOUT_MS = 2e4;
 var DEFAULT_READY_POLL_MS = 500;
-var COMPOSER_GLYPH = "\u203A";
+var COMPOSER_READY = /›\s+Ask Codex/;
 var TRUST_GATE = /hooks need review|trust all and continue|trust all/i;
 async function dismissCodexTrustGate(ctx, tmuxName, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TRUST_TIMEOUT_MS2;
@@ -972,7 +975,7 @@ async function awaitComposerReady(ctx, tmuxName, opts = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const pane = await capture(ctx, tmuxName);
-    if (pane.includes(COMPOSER_GLYPH)) return;
+    if (COMPOSER_READY.test(pane)) return;
     await sleep2(pollMs);
   }
 }
@@ -2014,7 +2017,7 @@ Environment variables:
                        want to pin a specific version.
   CSD_CODEX_MODEL / CSD_PI_MODEL
                        Optional model override for codex / pi workers. Unset = the
-                       harness default (codex: gpt-5.5; pi: its configured default).
+                       harness default (codex: its current default model; pi: its configured default).
   CSD_CONVERSE_DIAG_FILE
                        When set, \`converse\` writes a post-mortem diagnostic (ps tree +
                        tmux capture-pane + worker session JSONL tail + csd events tail)

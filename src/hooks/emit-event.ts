@@ -117,7 +117,13 @@ export function runHook(opts: HookOptions): HookResult {
   appendEvent(eventsPath(opts.workerDir, sessionId), worker);
 
   // Stop must approve so the hook never blocks the agent.
-  const stdout = hookEventName === 'Stop' ? '{"decision":"approve"}' : '';
+  // Claude's Stop hook wants `{"decision":"approve"}`; codex rejects it ("hook
+  // returned invalid stop hook JSON output"), so the baked (codex) path stays
+  // silent: exit 0 with no output is success there.
+  const stdout =
+    hookEventName === 'Stop' && opts.baked === undefined
+      ? '{"decision":"approve"}'
+      : '';
   return { stdout, appended: worker };
 }
 

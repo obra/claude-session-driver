@@ -39,7 +39,10 @@ const CODEX_HOOK_EVENTS = [
   'SessionEnd',
 ] as const;
 
-const DEFAULT_MODEL = 'gpt-5.5';
+// No default model: codex 0.154 retires pinned models (gpt-5.5 -> gpt-5.6-sol)
+// and answers a pinned retired model with a blocking migration prompt at
+// startup that swallows the first pasted prompt. Leave `model` unset so the
+// worker inherits codex's current default; CSD_CODEX_MODEL still pins one.
 
 /**
  * Escape a string for a TOML *basic* string (`"..."`): backslash and double
@@ -108,15 +111,19 @@ export function codexWorkerEnv(workerHome: string): Record<string, string> {
  */
 export function buildCodexConfig(opts: {
   cwd: string;
-  model: string;
+  model?: string;
   hookCommand: string;
 }): string {
   const { cwd, model, hookCommand } = opts;
   const lines: string[] = [
-    `model = ${tomlBasicString(model)}`,
+    ...(model === undefined ? [] : [`model = ${tomlBasicString(model)}`]),
     // Hardcoded safe literal — no user input, no escaping needed (unlike `model`
     // and `cwd` which go through tomlBasicString because they come from the user).
     'model_reasoning_effort = "low"',
+    // Codex pops a "switch model?" picker after a turn when the account nears
+    // its rate limit; a modal eats the next pasted prompt, so hide it.
+    '[notice]',
+    'hide_rate_limit_model_nudge = true',
     `[projects.${tomlBasicString(cwd)}]`,
     'trust_level = "trusted"',
   ];
@@ -199,7 +206,7 @@ export const codex: HarnessDriver = {
 
     const config = buildCodexConfig({
       cwd,
-      model: process.env.CSD_CODEX_MODEL ?? DEFAULT_MODEL,
+      model: process.env.CSD_CODEX_MODEL,
       hookCommand,
     });
     writeFileSync(join(workerHome, 'config.toml'), config);

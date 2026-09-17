@@ -119,12 +119,12 @@ describe('awaitComposerReady', () => {
     rmSync(workerDir, { recursive: true });
   });
 
-  it('returns once the composer glyph appears', async () => {
+  it('returns once the idle composer (glyph + placeholder) appears', async () => {
     const calls = freshCalls();
     // Big timeout so the test only finishes fast if the glyph is seen.
     const ctx = makeCtx(
       workerDir,
-      fakeTmux(calls, () => 'ready ›'),
+      fakeTmux(calls, () => '› Ask Codex to do anything'),
     );
     await awaitComposerReady(ctx, TMUX_NAME, {
       timeoutMs: 5000,
