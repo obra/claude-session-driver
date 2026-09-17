@@ -109,7 +109,7 @@ function runHook(opts) {
   const ts = opts.now();
   const worker = buildEvent(event, ts, payload);
   appendEvent(eventsPath(opts.workerDir, sessionId), worker);
-  const stdout = hookEventName === "Stop" ? '{"decision":"approve"}' : "";
+  const stdout = hookEventName === "Stop" && opts.baked === void 0 ? '{"decision":"approve"}' : "";
   return { stdout, appended: worker };
 }
 function buildEvent(event, ts, payload) {
