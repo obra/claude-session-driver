@@ -123,13 +123,16 @@ describe('codex.prepare', () => {
     else process.env.CSD_EMIT_EVENT_PATH = prevEmit;
   });
 
-  it('writes a valid config.toml with model, trust, and all six hook events', async () => {
+  it('writes a valid config.toml with no pinned model, trust, and all six hook events', async () => {
     await codex.prepare('w1', '/some/project', codexHome);
     const raw = readFileSync(join(codexHome, 'config.toml'), 'utf8');
     const parsed = parseToml(raw) as Record<string, unknown>;
 
-    expect(parsed.model).toBe('gpt-5.5');
+    expect(parsed.model).toBeUndefined();
     expect(parsed.model_reasoning_effort).toBe('low');
+    expect(
+      (parsed.notice as Record<string, unknown>).hide_rate_limit_model_nudge,
+    ).toBe(true);
 
     const projects = parsed.projects as Record<string, { trust_level: string }>;
     expect(projects['/some/project']!.trust_level).toBe('trusted');

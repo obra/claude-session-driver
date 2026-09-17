@@ -126,7 +126,7 @@ Environment variables:
                        want to pin a specific version.
   CSD_CODEX_MODEL / CSD_PI_MODEL
                        Optional model override for codex / pi workers. Unset = the
-                       harness default (codex: gpt-5.5; pi: its configured default).
+                       harness default (codex: its current default model; pi: its configured default).
   CSD_CONVERSE_DIAG_FILE
                        When set, \`converse\` writes a post-mortem diagnostic (ps tree +
                        tmux capture-pane + worker session JSONL tail + csd events tail)

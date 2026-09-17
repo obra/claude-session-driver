@@ -358,6 +358,14 @@ describe('runHook — codex meta self-registration (baked args)', () => {
     ]);
   });
 
+  it('Stop stays silent on stdout for codex (codex rejects the claude approve JSON)', () => {
+    const dir = tmpDir();
+    const stdin = JSON.stringify({ session_id: SID, hook_event_name: 'Stop' });
+    const result = runHook({ stdin, workerDir: dir, now: fixedNow, baked });
+    expect(result.stdout).toBe('');
+    expect(result.appended).toEqual({ event: 'stop', ts: 'T' });
+  });
+
   it('without baked args, no meta → still no-ops (claude path unchanged)', () => {
     const dir = tmpDir();
     const stdin = JSON.stringify({
