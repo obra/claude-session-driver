@@ -23,7 +23,8 @@
  *      `<sid>.meta`, harness codex), UserPromptSubmit, PreToolUse, writes the
  *      rollout user/assistant lines, then Stop. So read-turn/status have a
  *      completed turn (the assistant text is FAKE_DONE).
- *   6. Prints the composer glyph `›` (fast await-ready path).
+ *   6. Prints the idle composer line `› Ask Codex to do anything` (the
+ *      readiness check matches glyph + placeholder, not the bare glyph).
  *   7. Drains the trust-gate keystroke csd sends ('2' + Enter).
  *   8. On each pasted prompt (read from stdin = the tmux pane) fires
  *      UserPromptSubmit (so csd's send confirmation works) but produces NO new
@@ -168,8 +169,8 @@ appendRollout(
 );
 fire('Stop');
 
-// --- Composer glyph -> csd's await-ready returns fast. ---
-process.stdout.write('›\n');
+// --- Idle composer line (glyph + placeholder) -> csd's await-ready returns fast. ---
+process.stdout.write('› Ask Codex to do anything\n');
 
 // --- React to pasted prompts the way codex would. ---
 const rl = createInterface({ input: process.stdin });

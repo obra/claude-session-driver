@@ -410,9 +410,14 @@ describe('cmdLaunch — codex (derive)', () => {
       sendText: [],
       sendEnter: [],
     };
-    // The pane shows the trust gate and the composer glyph, so both launch
+    // The pane shows the trust gate and the idle composer line, so both launch
     // helpers act (dismiss + ready) on the first capture.
-    const ctx = codexCtx(codexFakeTmux(calls, () => 'Hooks need review ›'));
+    const ctx = codexCtx(
+      codexFakeTmux(
+        calls,
+        () => 'Hooks need review\n› Ask Codex to do anything',
+      ),
+    );
 
     const result = await cmdLaunch(
       ctx,

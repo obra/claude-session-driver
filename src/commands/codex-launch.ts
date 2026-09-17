@@ -82,7 +82,8 @@ export async function dismissCodexTrustGate(
 }
 
 /**
- * Block until codex's composer is ready (its prompt glyph `›` is visible), or
+ * Block until codex's composer is ready (the idle composer line `› Ask Codex`
+ * is visible; the bare glyph also appears as a modal cursor), or
  * settle after the window. derive readiness has no hard signal — codex's
  * session_start fires at the first prompt, not at boot — so this is best-effort:
  * it returns success on timeout, and the first send re-confirms via the hook's
