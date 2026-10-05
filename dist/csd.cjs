@@ -883,7 +883,7 @@ function classifyStatus(last) {
 
 // src/commands/await-start.ts
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-var DEFAULT_TRUST_TIMEOUT_MS = 5e3;
+var DEFAULT_TRUST_TIMEOUT_MS = 2e4;
 var DEFAULT_START_TIMEOUT_MS = 3e4;
 var DEFAULT_POLL_MS = 250;
 function sawSessionStart(eventFile) {
@@ -893,6 +893,10 @@ function sawSessionStart(eventFile) {
 }
 function paneTail(pane, n) {
   return pane.split("\n").map((line) => line.replace(/\s+$/, "")).filter((line) => line.length > 0).slice(-n).join("\n");
+}
+function highlightedOption(pane) {
+  const line = pane.split("\n").find((l) => l.includes("\u276F"));
+  return line ? line.slice(line.indexOf("\u276F") + 1).trim() : "";
 }
 async function awaitSessionStart(ctx, tmuxName, sessionId, opts = {}) {
   const trustTimeoutMs = opts.trustTimeoutMs ?? DEFAULT_TRUST_TIMEOUT_MS;
@@ -904,8 +908,12 @@ async function awaitSessionStart(ctx, tmuxName, sessionId, opts = {}) {
     if (sawSessionStart(eventFile)) break;
     const pane = await ctx.tmux.capturePane(tmuxName);
     if (pane.includes("trust this folder")) {
-      await ctx.tmux.sendEnter(tmuxName);
-      break;
+      if (highlightedOption(pane).startsWith("No")) {
+        await ctx.tmux.sendKey(tmuxName, "Down");
+      } else {
+        await ctx.tmux.sendEnter(tmuxName);
+        break;
+      }
     }
     await sleep(pollMs);
   }
