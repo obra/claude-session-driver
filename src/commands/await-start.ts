@@ -7,13 +7,16 @@ import type { CommandContext } from './context.js';
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
-/** Bash literal: the trust-dialog window and the proof-of-life window. */
-const DEFAULT_TRUST_TIMEOUT_MS = 5_000;
+/**
+ * The trust-dialog window and the proof-of-life window. Claude with plugins
+ * loaded can take well over 5s to draw the trust dialog.
+ */
+const DEFAULT_TRUST_TIMEOUT_MS = 20_000;
 const DEFAULT_START_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
 
 export interface AwaitStartOpts {
-  /** Trust-dialog window in ms (bash: 5s). */
+  /** Trust-dialog window in ms. */
   trustTimeoutMs?: number;
   /** session_start window in ms (bash: 30s). */
   startTimeoutMs?: number;
@@ -58,6 +61,12 @@ function paneTail(pane: string, n: number): string {
  * On timeout it tears the worker down (kill session, remove meta+events+shim)
  * and returns `started: false` with the failure text for the caller to print.
  */
+/** Text of the menu option under the `❯` cursor, or '' if none is shown. */
+function highlightedOption(pane: string): string {
+  const line = pane.split('\n').find((l) => l.includes('❯'));
+  return line ? line.slice(line.indexOf('❯') + 1).trim() : '';
+}
+
 export async function awaitSessionStart(
   ctx: CommandContext,
   tmuxName: string,
@@ -76,8 +85,15 @@ export async function awaitSessionStart(
     if (sawSessionStart(eventFile)) break;
     const pane = await ctx.tmux.capturePane(tmuxName);
     if (pane.includes('trust this folder')) {
-      await ctx.tmux.sendEnter(tmuxName);
-      break;
+      // Current Claude Code highlights "No, exit" by default, so Enter alone
+      // would quit the worker. Move the cursor until a "Yes" option is
+      // highlighted, then confirm.
+      if (highlightedOption(pane).startsWith('No')) {
+        await ctx.tmux.sendKey(tmuxName, 'Down');
+      } else {
+        await ctx.tmux.sendEnter(tmuxName);
+        break;
+      }
     }
     await sleep(pollMs);
   }

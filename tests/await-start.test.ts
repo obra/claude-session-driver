@@ -21,12 +21,14 @@ interface FakeTmuxCalls {
   capturePane: string[];
   sendEnter: string[];
   killSession: string[];
+  sendKey?: string[];
 }
 
 function fakeTmux(
   calls: FakeTmuxCalls,
   paneText: () => string,
   onSendEnter?: () => void,
+  onSendKey?: (key: string) => void,
 ): Tmux {
   return {
     async hasSession() {
@@ -47,7 +49,10 @@ function fakeTmux(
       calls.sendEnter.push(name);
       onSendEnter?.();
     },
-    async sendKey() {},
+    async sendKey(_name: string, key: string) {
+      calls.sendKey?.push(key);
+      onSendKey?.(key);
+    },
     async newSession() {},
     async respawnPane() {},
   };
@@ -134,6 +139,70 @@ describe('awaitSessionStart', () => {
     expect(result.started).toBe(true);
     expect(calls.sendEnter).toContain(TMUX_NAME);
   });
+
+  it('moves the trust dialog selection to "Yes" when it defaults to "No, exit"', async () => {
+    const ef = eventsPath(workerDir, SID);
+    const calls: FakeTmuxCalls = {
+      capturePane: [],
+      sendEnter: [],
+      killSession: [],
+      sendKey: [],
+    };
+    // Current Claude Code highlights "No, exit"; Enter there quits the worker.
+    let selected = 'no';
+    const pane = () =>
+      selected === 'no'
+        ? ' Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n'
+        : ' Quick safety check: Is this a project you created or one you trust?\n   No, exit\n ❯ Yes, I trust this folder\n';
+    const tmux = fakeTmux(
+      calls,
+      pane,
+      () => {
+        if (selected !== 'yes') throw new Error('Enter pressed on "No, exit"');
+        appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
+      },
+      (key) => {
+        if (key === 'Down') selected = 'yes';
+      },
+    );
+    const ctx = makeCtx(workerDir, tmux);
+    const result = await awaitSessionStart(ctx, TMUX_NAME, SID, {
+      trustTimeoutMs: 1000,
+      startTimeoutMs: 2000,
+      pollMs: 10,
+    });
+    expect(result.started).toBe(true);
+    expect(calls.sendKey).toEqual(['Down']);
+    expect(calls.sendEnter).toEqual([TMUX_NAME]);
+  });
+
+  it('waits long enough by default for a trust dialog that appears after a slow start', async () => {
+    const ef = eventsPath(workerDir, SID);
+    const calls: FakeTmuxCalls = {
+      capturePane: [],
+      sendEnter: [],
+      killSession: [],
+    };
+    // Claude with plugins loaded can take several seconds to draw the dialog.
+    const shownAt = Date.now() + 6_000;
+    const tmux = fakeTmux(
+      calls,
+      () =>
+        Date.now() >= shownAt
+          ? ' ❯ Yes, I trust this folder\n   No, exit\n'
+          : 'starting...',
+      () => {
+        appendEvent(ef, { event: 'session_start', ts: '2025-01-01T00:00:00Z' });
+      },
+    );
+    const ctx = makeCtx(workerDir, tmux);
+    const result = await awaitSessionStart(ctx, TMUX_NAME, SID, {
+      startTimeoutMs: 2000,
+      pollMs: 50,
+    });
+    expect(result.started).toBe(true);
+    expect(calls.sendEnter).toEqual([TMUX_NAME]);
+  }, 15_000);
 
   it('times out: kills the session, removes meta+events, returns a failure message', async () => {
     // No session_start event is ever written, so the wait must time out.
