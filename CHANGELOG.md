@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.0.1] - 2026-10-10
+
+### Fixed
+- `csd launch` accepts Claude Code's folder-trust dialog when it highlights
+  "No, exit": it moves to a "Yes" option before confirming, instead of a bare
+  Enter that quit the worker. The trust window is now 20s (was 5s), since
+  Claude with plugins loaded can take longer to draw it. (#34)
+- `csd converse` no longer returns a partial Claude reply. Claude can fire its
+  Stop hook before it writes the turn's closing message, so a turn with text
+  before and after a tool call sometimes came back as only the first text.
+  `converse` now waits until the turn's last assistant message has finished,
+  and falls back to the latest reply if the transcript never shows that. (#35)
+
 ## [4.0.0] - 2026-06-14
 
 ### Changed
