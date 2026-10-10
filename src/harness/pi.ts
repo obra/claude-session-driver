@@ -157,4 +157,9 @@ export const pi: HarnessDriver = {
   parseTurn(transcript: string): NormalizedTurn {
     return parsePiTurn(transcript);
   },
+
+  // No mid-turn marker is checked for this harness.
+  turnFinished(_transcript: string): boolean {
+    return true;
+  },
 };

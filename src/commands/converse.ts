@@ -140,26 +140,29 @@ export async function cmdConverse(
 
   // The turn ended (wait-for-turn saw a stop/session_end after the prompt). The
   // transcript may lag the event by a beat, so poll it, parsing the latest turn
-  // through the harness driver until the assistant text is present.
+  // through the harness driver until the assistant text is present and the
+  // driver sees the turn finished. If it never looks finished, return the
+  // latest reply rather than nothing.
+  let partial: string | null = null;
   for (let i = 0; i < postPollCount; i++) {
     const transcript = readTranscript(logFile);
     if (transcript.length > 0) {
       const turn = ctx.driver.parseTurn(transcript);
       if (turn.length > 0) {
-        if (opts.withTurn) {
-          return {
-            stdout: renderTurnForCommand(turn, { full: false }),
-            code: 0,
-          };
-        }
-        const response = assistantText(turn);
+        const response = opts.withTurn
+          ? renderTurnForCommand(turn, { full: false })
+          : assistantText(turn);
         if (response.length > 0) {
-          return { stdout: response, code: 0 };
+          if (ctx.driver.turnFinished(transcript)) {
+            return { stdout: response, code: 0 };
+          }
+          partial = response;
         }
       }
     }
     await sleep(postPollMs);
   }
+  if (partial !== null) return { stdout: partial, code: 0 };
 
   const diag = await dumpDiag('no_assistant_response');
   return {

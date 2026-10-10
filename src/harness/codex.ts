@@ -227,4 +227,9 @@ export const codex: HarnessDriver = {
   parseTurn(transcript: string): NormalizedTurn {
     return parseCodexTurn(transcript);
   },
+
+  // No mid-turn marker is checked for this harness.
+  turnFinished(_transcript: string): boolean {
+    return true;
+  },
 };

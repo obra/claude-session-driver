@@ -38,7 +38,7 @@ interface ContentBlock {
 
 interface TranscriptLine {
   type?: unknown;
-  message?: { content?: unknown };
+  message?: { content?: unknown; stop_reason?: unknown };
 }
 
 function parseLines(jsonl: string): TranscriptLine[] {
@@ -132,6 +132,23 @@ function collectAssistant(line: TranscriptLine, out: NormalizedTurn): void {
       });
     }
   }
+}
+
+/**
+ * False while the latest turn's last assistant message stopped for a tool call:
+ * Claude can fire its Stop hook before it writes the turn's closing message, so
+ * a transcript read at that moment ends mid-turn. A missing stop_reason counts
+ * as finished, so transcripts without the field behave as before.
+ */
+export function claudeTurnFinished(jsonl: string): boolean {
+  const lines = parseLines(jsonl);
+  const boundary = findBoundary(lines);
+  if (boundary < 0) return true;
+  const last = lines
+    .slice(boundary)
+    .filter((line) => line.type === 'assistant')
+    .at(-1);
+  return last?.message?.stop_reason !== 'tool_use';
 }
 
 export function parseClaudeTurn(jsonl: string): NormalizedTurn {

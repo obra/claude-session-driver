@@ -119,4 +119,10 @@ export interface HarnessDriver {
 
   /** Parse a transcript's JSONL into the shared normalized turn model. */
   parseTurn(transcript: string): NormalizedTurn;
+
+  /**
+   * False when the transcript visibly stops mid-turn, so converse should keep
+   * reading it after the turn-end event rather than return a partial reply.
+   */
+  turnFinished(transcript: string): boolean;
 }
