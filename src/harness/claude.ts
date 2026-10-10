@@ -9,7 +9,11 @@
  */
 
 import { claudeTranscriptPath } from '../core/paths.js';
-import { type NormalizedTurn, parseClaudeTurn } from '../core/transcript.js';
+import {
+  claudeTurnFinished,
+  type NormalizedTurn,
+  parseClaudeTurn,
+} from '../core/transcript.js';
 import type { HarnessDriver, LaunchMode } from './driver.js';
 
 /**
@@ -130,5 +134,9 @@ export const claude: HarnessDriver = {
 
   parseTurn(transcript: string): NormalizedTurn {
     return parseClaudeTurn(transcript);
+  },
+
+  turnFinished(transcript: string): boolean {
+    return claudeTurnFinished(transcript);
   },
 };

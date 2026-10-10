@@ -144,6 +144,68 @@ describe('cmdConverse', () => {
     expect(result.stdout).toBe('the fresh answer');
   });
 
+  it('waits for the end of the turn when the stop event beats the transcript', async () => {
+    // The stop hook can fire before Claude writes the turn's last message.
+    // At that moment the transcript ends on a text block whose message
+    // stopped for a tool call; the closing text lands a few polls later.
+    const ef = eventsPath(workerDir, SID);
+    const preTool =
+      '{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"text","text":"Loading the skill."}]}}';
+    const toolUse =
+      '{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Skill","input":{}}]}}';
+    const toolResult =
+      '{"type":"user","message":{"content":[{"type":"tool_result","content":"loaded"}]}}';
+    const closing =
+      '{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"What happens now when you pick a book?"}]}}';
+    writeTranscript(home, [ASSISTANT_BEFORE, USER_PROMPT].join('\n'));
+    const tmux = respondingTmux(ef, () => {
+      writeTranscript(
+        home,
+        [ASSISTANT_BEFORE, USER_PROMPT, preTool, toolUse, toolResult].join(
+          '\n',
+        ),
+      );
+      setTimeout(() => {
+        writeTranscript(
+          home,
+          [
+            ASSISTANT_BEFORE,
+            USER_PROMPT,
+            preTool,
+            toolUse,
+            toolResult,
+            closing,
+          ].join('\n'),
+        );
+      }, 30);
+    });
+    const ctx = makeCtx(workerDir, home, tmux);
+    const result = await cmdConverse(ctx, SID, 'do the thing', fastOpts);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Loading the skill.');
+    expect(result.stdout).toContain('What happens now when you pick a book?');
+  });
+
+  it('returns the partial reply when the transcript never shows the turn finished', async () => {
+    const ef = eventsPath(workerDir, SID);
+    const preTool =
+      '{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"text","text":"Loading the skill."}]}}';
+    writeTranscript(home, [ASSISTANT_BEFORE, USER_PROMPT].join('\n'));
+    const tmux = respondingTmux(ef, () => {
+      writeTranscript(
+        home,
+        [ASSISTANT_BEFORE, USER_PROMPT, preTool].join('\n'),
+      );
+    });
+    const ctx = makeCtx(workerDir, home, tmux);
+    const result = await cmdConverse(ctx, SID, 'do the thing', {
+      ...fastOpts,
+      postPollCount: 3,
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('Loading the skill.');
+  });
+
   it('--with-turn returns the rendered markdown turn', async () => {
     const ef = eventsPath(workerDir, SID);
     writeTranscript(home, [ASSISTANT_BEFORE, USER_PROMPT].join('\n'));

@@ -248,6 +248,13 @@ function collectAssistant(line, out) {
     }
   }
 }
+function claudeTurnFinished(jsonl) {
+  const lines = parseLines(jsonl);
+  const boundary = findBoundary(lines);
+  if (boundary < 0) return true;
+  const last = lines.slice(boundary).filter((line) => line.type === "assistant").at(-1);
+  return last?.message?.stop_reason !== "tool_use";
+}
 function parseClaudeTurn(jsonl) {
   const lines = parseLines(jsonl);
   const boundary = findBoundary(lines);
@@ -554,6 +561,9 @@ var claude = {
   },
   parseTurn(transcript) {
     return parseClaudeTurn(transcript);
+  },
+  turnFinished(transcript) {
+    return claudeTurnFinished(transcript);
   }
 };
 
@@ -719,6 +729,10 @@ var codex = {
   },
   parseTurn(transcript) {
     return parseCodexTurn(transcript);
+  },
+  // No mid-turn marker is checked for this harness.
+  turnFinished(_transcript) {
+    return true;
   }
 };
 
@@ -808,6 +822,10 @@ var pi = {
   },
   parseTurn(transcript) {
     return parsePiTurn(transcript);
+  },
+  // No mid-turn marker is checked for this harness.
+  turnFinished(_transcript) {
+    return true;
   }
 };
 
@@ -1539,25 +1557,24 @@ csd-diagnostic: ${diagDest}` : "";
       code: 1
     };
   }
+  let partial = null;
   for (let i = 0; i < postPollCount; i++) {
     const transcript = readTranscript(logFile);
     if (transcript.length > 0) {
       const turn = ctx.driver.parseTurn(transcript);
       if (turn.length > 0) {
-        if (opts.withTurn) {
-          return {
-            stdout: renderTurnForCommand(turn, { full: false }),
-            code: 0
-          };
-        }
-        const response = assistantText(turn);
+        const response = opts.withTurn ? renderTurnForCommand(turn, { full: false }) : assistantText(turn);
         if (response.length > 0) {
-          return { stdout: response, code: 0 };
+          if (ctx.driver.turnFinished(transcript)) {
+            return { stdout: response, code: 0 };
+          }
+          partial = response;
         }
       }
     }
     await sleep6(postPollMs);
   }
+  if (partial !== null) return { stdout: partial, code: 0 };
   const diag = await dumpDiag("no_assistant_response");
   return {
     stderr: `Error: Timed out waiting for assistant response in session log${diag}`,
